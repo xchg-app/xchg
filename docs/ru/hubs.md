@@ -107,7 +107,7 @@ cd ~/repos/api && xchg projects add   # присоединиться к суще
 ```bash
 xchg key new                      # ed25519 без пароля в ~/.config/xchg/keys/, печатает открытый ключ
 xchg hub add work git@host:team/work.git --login bob --ssh-key ~/.config/xchg/keys/xchg_ed25519
-xchg hub check work               # принимает ли хост этот ключ
+xchg hub check work               # доходит ли git до хаба с этим ключом
 xchg hub key work <другой ключ>   # поменять ключ у уже подключённого хаба
 ```
 

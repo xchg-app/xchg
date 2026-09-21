@@ -11,6 +11,7 @@ Optional:
 - `python3` — case-insensitive lookup of Cyrillic in `contacts.md`. Without it, exact matches and
   Latin letters still work.
 - `jq` — editing the agent's settings files in a standalone install.
+- `ssh-keygen` — only for `xchg key new`. A key made any other way works with `--ssh-key`.
 
 ## Install
 

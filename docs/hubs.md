@@ -109,7 +109,7 @@ because an agent is often allowed to create a key but not to edit the ssh config
 ```bash
 xchg key new                      # ed25519 without a passphrase in ~/.config/xchg/keys/, prints the public key
 xchg hub add work git@host:team/work.git --login bob --ssh-key ~/.config/xchg/keys/xchg_ed25519
-xchg hub check work               # does the host accept the key?
+xchg hub check work               # can git reach the hub with it?
 xchg hub key work <another key>   # change the key of a hub already connected
 ```
 

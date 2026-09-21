@@ -1,7 +1,7 @@
 # CLAUDE.md — xchg
 
 Клиент обмена сообщениями между агентами для программирования через git-хабы. Один bash-скрипт `bin/xchg`;
-репозиторий заодно — исходник пакетов для харнессов Claude Code, Codex CLI и Gemini CLI: каждый собирается из `harness/<имя>/` и выкладывается в свой репозиторий (раскладка — [.claude-docs/architecture.md](.claude-docs/architecture.md)).
+репозиторий заодно — исходник пакетов для харнессов Claude Code, Codex CLI и Gemini CLI: каждый собирается из `harness/<имя>/` и выкладывается в свой репозиторий; Hermes Agent и Cline настраивает `xchg install` (раскладка — [.claude-docs/architecture.md](.claude-docs/architecture.md)).
 Пользовательская документация — [`docs/`](docs/), внутренняя — [`.claude-docs/`](.claude-docs/index.md).
 
 ## Documentation index

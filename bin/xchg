@@ -100,6 +100,10 @@ hub_key()    { local i; i=$(hub_idx "$1") || return 0; echo "${HUB_KEYS[$i]:-}";
 # A hub may have a key of its own. Everything ssh needs goes into the clone's core.sshCommand, so every
 # later git command uses it; ~/.ssh is never touched (an agent is often not allowed to write there).
 KEYS_DIR="$CONF_DIR/keys"
+check_key() {  # <path>: the path ends up in core.sshCommand, which git runs through a shell
+  [ -f "$1" ] || die "no ssh key at $1 (xchg key new)"
+  case "$1" in *[!A-Za-z0-9._/@~-]*) die "the ssh key path may hold only [A-Za-z0-9._/@~-]: $1";; esac
+}
 ssh_cmd() {  # <key path>
   printf 'ssh -i "%s" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="%s"' \
     "$1" "$CONF_DIR/known_hosts"
@@ -546,8 +550,15 @@ read_hook_input() {  # an agent hook passes JSON on stdin; run by hand, stdin is
   [ -t 0 ] && return 0
   local j=""; IFS= read -r -t 1 -d '' j || true
   HOOK_EVENT=$(printf '%s' "$j" | sed -n 's/.*"hook_event_name"[[:space:]]*:[[:space:]]*"\([A-Za-z_]*\)".*/\1/p' | head -1)
-  # a harness whose session-start hook can't answer marks the first turn of the session instead
-  case "$j" in *'"is_first_turn"'*) case "$j" in *'"is_first_turn": true'*|*'"is_first_turn":true'*) HOOK_SESSION=1;; esac;; esac
+  # A harness whose session-start hook can't answer marks the first turn of the session instead.
+  # The mark is only believed outside the prompt and the quoted history: those carry the user's text,
+  # and a message that merely mentions the mark would dump the whole inbox into the context again.
+  local head="$j"
+  if have jq; then printf '%s' "$j" | jq -e '.. | objects | select(has("is_first_turn")) | .is_first_turn == true' >/dev/null 2>&1 && HOOK_SESSION=1
+  else
+    head="${head%%\"user_message\"*}"; head="${head%%\"conversation_history\"*}"
+    case "$head" in *'"is_first_turn": true'*|*'"is_first_turn":true'*) HOOK_SESSION=1;; esac
+  fi
   return 0
 }
 # Hook events differ by harness, and so does the field a hook answers with: the text reaches the model as
@@ -894,7 +905,7 @@ cmd_hub() {
       while [ $# -gt 0 ]; do case "$1" in --path) path=$(expand_tilde "$2"); shift 2;; --remote) remote="$2"; shift 2;;
         --login) login="$2"; shift 2;; --ssh-key) key=$(expand_tilde "$2"); shift 2;;
         *) udie "hub init <name> [--remote URL] [--path P] [--login L] [--ssh-key K]";; esac; done
-      [ -z "$key" ] || [ -f "$key" ] || die "no ssh key at $key (xchg key new)"
+      [ -z "$key" ] || check_key "$key"
       [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]] || udie "hub init: hub name must be [A-Za-z0-9_-]"
       ensure_conf >/dev/null; is_hub "$name" && die "hub '$name' already exists (xchg hubs)"
       [ -n "$path" ] || path="$HOME/exchange/$name"; [ -e "$path" ] && die "$path already exists"
@@ -912,7 +923,7 @@ cmd_hub() {
       local name="${1:-}" remote="${2:-}" login="" path="" key=""; shift 2 2>/dev/null || udie "hub add <name> <remote> [--login L] [--path P] [--ssh-key K]"
       while [ $# -gt 0 ]; do case "$1" in --login) login="$2"; shift 2;; --path) path=$(expand_tilde "$2"); shift 2;;
         --ssh-key) key=$(expand_tilde "$2"); shift 2;; *) udie "hub add: unknown flag $1";; esac; done
-      [ -z "$key" ] || [ -f "$key" ] || die "no ssh key at $key (xchg key new)"
+      [ -z "$key" ] || check_key "$key"
       [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]] || udie "hub add: hub name must be [A-Za-z0-9_-]"
       ensure_conf >/dev/null; is_hub "$name" && die "hub '$name' already exists (xchg hubs)"
       [ -n "$path" ] || path="$HOME/exchange/$name"
@@ -926,18 +937,18 @@ cmd_hub() {
       echo "hub $name connected: $path <- $(masked "$remote")${login:+ (login $login)}${key:+ (ssh key $key)}"
       register_me "$name";;
     key) local name="${1:-}" kp="${2:-}"; [ -n "$kp" ] || udie "hub key <name> <path to key>"; require_hubs
-      kp=$(expand_tilde "$kp"); is_hub "$name" || die "no hub '$name'"; [ -f "$kp" ] || die "no ssh key at $kp (xchg key new)"
+      kp=$(expand_tilde "$kp"); is_hub "$name" || die "no hub '$name'"; check_key "$kp"
       local d="$(hub_path "$name")"; [ -d "$d/.git" ] && bind_key "$d" "$kp"
       conf_set_hub "$name" ssh_key "$kp"; hub_set "$name" key "$kp"
       echo "hub $name now uses the ssh key $kp";;
     check) local name="${1:-}"; [ -n "$name" ] || udie "hub check <name>"; require_hubs; is_hub "$name" || die "no hub '$name'"
-      local r host k sc; r=$(hub_remote "$name"); [ -n "$r" ] || r=$(git -C "$(hub_path "$name")" remote get-url origin 2>/dev/null || true)
+      local r k sc; r=$(hub_remote "$name"); [ -n "$r" ] || r=$(git -C "$(hub_path "$name")" remote get-url origin 2>/dev/null || true)
       [ -n "$r" ] || die "hub $name is local: nothing to check"
-      case "$r" in *://*) host=${r#*://}; host=${host%%/*};; *:*) host=${r%%:*};; *) die "hub $name: remote $(masked "$r") is a path, not ssh";; esac
-      k=$(hub_key "$name"); sc="ssh"; [ -n "$k" ] && sc=$(ssh_cmd "$k")
-      # the server answers a keyless ssh session with a greeting; anything else means the key is not accepted
-      if eval "$sc -o BatchMode=yes -o ConnectTimeout=10 $host" >/dev/null 2>&1; then echo "hub $name: the key is accepted by $host"
-      else die "hub $name: $host did not accept the key${k:+ $k} (register the public key ${k:+${k}.pub }with the hub owner)"; fi;;
+      # the question is whether git can reach the hub, so ask git: that works for ssh and https alike
+      # and depends on no greeting of any particular host
+      k=$(hub_key "$name"); sc=""; [ -n "$k" ] && sc="$(ssh_cmd "$k") -o BatchMode=yes"
+      if GIT_SSH_COMMAND="$sc" git ls-remote "$r" HEAD >/dev/null 2>&1; then echo "hub $name: $(masked "$r") answers${k:+, the key $k is accepted}"
+      else die "hub $name: git cannot reach $(masked "$r")${k:+ with the key $k} (give the hub owner the public key${k:+ $k.pub}, or check the address)"; fi;;
     rm) local name="${1:-}"; [ -n "$name" ] || udie "hub rm <name>"; require_hubs; is_hub "$name" || die "no hub '$name'"
       conf_rm_hub "$name"; [ "$CFG_DEFAULT" = "$name" ] && conf_set_global default ""
       echo "hub $name removed from the registry; the clone at $(hub_path "$name") is left in place";;
@@ -1002,7 +1013,7 @@ harness_info() {  # <harness> -> H_DIR H_HOOKS H_START H_PROMPT H_TIMEOUT H_SKIL
 cline_hooks_dir() {
   local c; for c in "$HOME/Documents/Cline/Rules/Hooks" "$HOME/Documents/Cline/Hooks" "$HOME/Cline/Hooks"; do
     [ -d "$c" ] && { echo "$c"; return 0; }; done
-  echo "$HOME/Documents/Cline/Rules/Hooks"
+  return 0   # none of them exists: the client doesn't guess which one this build reads
 }
 HOOK_START='xchg inbox --brief 2>/dev/null || true'
 HOOK_PROMPT='xchg inbox --brief --max-age 300 2>/dev/null || true'
@@ -1041,12 +1052,14 @@ cmd_install() {
           echo "  a new hook command asks for your consent the first time it runs"
         fi;;
       scripts)
-        mkdir -p "$H_HOOKS"
+        [ -n "$H_HOOKS" ] || echo "  no hooks directory yet (open the hooks screen in the harness once); create each file by hand:"
         for ev in "$H_START" "$H_PROMPT"; do
           hcmd="xchg inbox --brief --hook-format $H_FORMAT"
           if [ "$ev" = "$H_START" ]; then hcmd="$hcmd --session"; else hcmd="$hcmd --max-age 300"; fi
-          printf '#!/bin/sh\n# written by xchg install\n%s 2>/dev/null || true\n' "$hcmd" > "$H_HOOKS/$ev"
-          chmod +x "$H_HOOKS/$ev"; echo "  hook $ev -> $H_HOOKS/$ev"
+          if [ -n "$H_HOOKS" ]; then
+            printf '#!/bin/sh\n# written by xchg install\n%s 2>/dev/null || true\n' "$hcmd" > "$H_HOOKS/$ev"
+            chmod +x "$H_HOOKS/$ev"; echo "  hook $ev -> $H_HOOKS/$ev"
+          else printf '    %s (executable): #!/bin/sh and %s\n' "$ev" "$hcmd"; fi
         done
         echo "  these hooks run on macOS and Linux only";;
     esac
@@ -1071,7 +1084,7 @@ cmd_status() {
   local hn ok
   for hn in $HARNESSES; do harness_info "$hn"; [ -d "$H_DIR" ] || continue
     # the hooks of a harness live either in one file or in a file per event
-    ok() { if [ "$H_STYLE" = scripts ]; then [ -f "$H_HOOKS/$2" ]; else grep -q "$1" "$H_HOOKS" 2>/dev/null; fi && echo ok || echo MISSING; }
+    ok() { if [ "$H_STYLE" = scripts ]; then [ -n "$H_HOOKS" ] && [ -f "$H_HOOKS/$2" ]; else grep -q "$1" "$H_HOOKS" 2>/dev/null; fi && echo ok || echo MISSING; }
     if [ -n "$H_START" ]; then echo "$hn: hooks $H_START $(ok 'xchg inbox --brief' "$H_START"), $H_PROMPT $(ok 'xchg inbox --brief --max-age' "$H_PROMPT"); skill: $(readlink "$H_SKILLS/exchange" 2>/dev/null || echo 'no symlink')"
     else echo "$hn: hook $H_PROMPT $(ok 'xchg inbox --brief' "$H_PROMPT"); skill: $(readlink "$H_SKILLS/exchange" 2>/dev/null || echo 'no symlink')"; fi
   done

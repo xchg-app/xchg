@@ -34,7 +34,13 @@ for hf in "claude-code .claude/settings.json UserPromptSubmit 30" "codex .codex/
   assert_eq "$(jq -r ".hooks.$3[0].hooks[0].timeout" "$H/$2")" "$4" "$1: timeout in the harness's unit"
 done
 [ -L "$H/.claude/skills/exchange" ] && [ -L "$H/.agents/skills/xchg-setup" ] && ok "skills linked" || fail "skills not linked"
-# a harness whose hooks are a file per event gets files; a YAML config is the user's to edit, so it only gets a snippet
+# a harness whose hooks are a file per event gets files, but only where that harness already keeps them:
+# the path differs between builds, so the client never creates one on a guess
+[ -d "$H/Documents" ] && fail "install created a directory the harness may not read" || ok "no hooks directory: nothing is created"
+assert_contains "$OUT" "TaskStart (executable)"; assert_contains "$OUT" "--hook-format cline"
+ok "cline: without a hooks directory install prints what to create"
+mkdir -p "$H/Documents/Cline/Rules/Hooks"
+run "$X" install </dev/null
 for ev in TaskStart UserPromptSubmit; do
   f="$H/Documents/Cline/Rules/Hooks/$ev"
   [ -x "$f" ] && ok "cline: hook $ev is an executable file" || fail "cline: no hook $ev"
@@ -95,7 +101,13 @@ assert_contains "$(git -C "$H/exchange/keyed" config core.sshCommand)" "$K2" "th
 assert_contains "$(cat "$H/.config/xchg/xchg.conf")" "ssh_key = $K2" "and so does the registry"
 run "$X" hub key keyed "$H/nosuch"; assert_eq "$RC" 1 "a missing key file is an error"
 run "$X" hub add bad "$SB/bare-work" --ssh-key "$H/nosuch"; assert_eq "$RC" 1 "hub add checks the key file too"
-run "$X" hub check keyed; assert_eq "$RC" 1 "a local hub has nothing to check"; assert_contains "$OUT" "not ssh"
+run "$X" hub check keyed; assert_eq "$RC" 0 "hub check asks git whether the hub answers"
+assert_contains "$OUT" "the key $K2 is accepted"
+run "$X" hub key keyed "$K" >/dev/null
+cp "$H/.config/xchg/xchg.conf" "$SB/conf.keyed"
+awk -v r="$SB/nosuch.git" '/^remote  = /{ $0 = "remote  = " r } { print }' "$SB/conf.keyed" > "$H/.config/xchg/xchg.conf"
+run "$X" hub check keyed; assert_eq "$RC" 1 "an unreachable hub fails the check"; assert_contains "$OUT" "cannot reach"
+cp "$SB/conf.keyed" "$H/.config/xchg/xchg.conf"
 run "$X" hub rm keyed >/dev/null
 fi
 
