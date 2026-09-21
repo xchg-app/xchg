@@ -130,10 +130,13 @@ xchg agent
 
 ```bash
 xchg hubs
-xchg hub init <имя> [--remote URL] [--path P] [--login L]
-xchg hub add <имя> <remote> [--login L] [--path P]
+xchg hub init <имя> [--remote URL] [--path P] [--login L] [--ssh-key K]
+xchg hub add <имя> <remote> [--login L] [--path P] [--ssh-key K]
+xchg hub key <имя> <путь к ключу>
+xchg hub check <имя>
 xchg hub rm <имя>
 xchg hub remote <имя> <url>
+xchg key new [--name N]
 xchg sync [--hub H] | xchg log [n] [--hub H] | xchg status | xchg install | xchg version
 ```
 

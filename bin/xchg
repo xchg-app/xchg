@@ -55,7 +55,7 @@ json_str() {  # stdin -> the contents of a JSON string literal (without quotes);
 
 # --- config: hub registry ------------------------------------------------------------------
 # The hub registry is parallel indexed arrays: bash 3.2 (macOS system bash) has no associative ones.
-HUBS=() HUB_PATHS=() HUB_REMOTES=() HUB_LOGINS=()
+HUBS=() HUB_PATHS=() HUB_REMOTES=() HUB_LOGINS=() HUB_KEYS=()
 CFG_DEFAULT="" CONF_MODE="none"
 
 parse_conf() {  # INI in awk: key = value, [hub <name>] sections, # comments; anything else is an error with a line number
@@ -67,7 +67,7 @@ parse_conf() {  # INI in awk: key = value, [hub <name>] sections, # comments; an
     line ~ /^\[hub [A-Za-z0-9_-]+\]$/ { sec=line; sub(/^\[hub /,"",sec); sub(/\]$/,"",sec); print "H", sec; next }
     line ~ /^\[/ { print "E", NR, "unknown section: " line; next }
     index(line,"=")>0 { i=index(line,"="); k=trim(substr(line,1,i-1)); v=trim(substr(line,i+1))
-      if (k !~ /^[a-z]+$/) { print "E", NR, "bad key: " line; next }
+      if (k !~ /^[a-z_]+$/) { print "E", NR, "bad key: " line; next }
       if (sec=="") print "G", k, v; else print "S", sec, k, v; next }
     { print "E", NR, "cannot parse: " line }' "$CONF")
   while IFS=$'\t' read -r tag a b c; do
@@ -79,6 +79,7 @@ parse_conf() {  # INI in awk: key = value, [hub <name>] sections, # comments; an
            path)   hub_set "$a" path "$(expand_tilde "$c")";;
            remote) hub_set "$a" remote "$c";;
            login)  hub_set "$a" login "$c";;
+           ssh_key) hub_set "$a" key "$(expand_tilde "$c")";;
            *) die "$CONF: unknown key '$b' in [hub $a]";;
          esac;;
     esac
@@ -90,11 +91,22 @@ load_conf() { [ -f "$CONF" ] && { CONF_MODE=conf; parse_conf; }; return 0; }
 # An empty array under set -u in bash < 4.4 is "unbound variable", hence ${a[@]+"${a[@]}"} everywhere.
 hub_idx() { local i=0 h; for h in ${HUBS[@]+"${HUBS[@]}"}; do [ "$h" = "$1" ] && { echo "$i"; return 0; }; i=$((i+1)); done; return 1; }
 is_hub() { hub_idx "$1" >/dev/null; }
-hub_new() { local i=${#HUBS[@]}; HUBS[$i]="$1"; HUB_PATHS[$i]="${2:-}"; HUB_REMOTES[$i]="${3:-}"; HUB_LOGINS[$i]="${4:-}"; }
+hub_new() { local i=${#HUBS[@]}; HUBS[$i]="$1"; HUB_PATHS[$i]="${2:-}"; HUB_REMOTES[$i]="${3:-}"; HUB_LOGINS[$i]="${4:-}"; HUB_KEYS[$i]="${5:-}"; }
 hub_set() { local i; i=$(hub_idx "$1") || return 1
-  case "$2" in path) HUB_PATHS[$i]="$3";; remote) HUB_REMOTES[$i]="$3";; login) HUB_LOGINS[$i]="$3";; esac; }
+  case "$2" in path) HUB_PATHS[$i]="$3";; remote) HUB_REMOTES[$i]="$3";; login) HUB_LOGINS[$i]="$3";; key) HUB_KEYS[$i]="$3";; esac; }
 hub_path()   { local i; i=$(hub_idx "$1") || return 0; echo "${HUB_PATHS[$i]:-}"; }
 hub_remote() { local i; i=$(hub_idx "$1") || return 0; echo "${HUB_REMOTES[$i]:-}"; }
+hub_key()    { local i; i=$(hub_idx "$1") || return 0; echo "${HUB_KEYS[$i]:-}"; }
+# A hub may have a key of its own. Everything ssh needs goes into the clone's core.sshCommand, so every
+# later git command uses it; ~/.ssh is never touched (an agent is often not allowed to write there).
+KEYS_DIR="$CONF_DIR/keys"
+ssh_cmd() {  # <key path>
+  printf 'ssh -i "%s" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="%s"' \
+    "$1" "$CONF_DIR/known_hosts"
+}
+bind_key() {  # <clone path> <key path>: remember the key in the clone
+  git -C "$1" config core.sshCommand "$(ssh_cmd "$2")"
+}
 require_hubs() { [ ${#HUBS[@]} -gt 0 ] || die "no hubs: xchg hub add <name> <remote> or xchg hub init <name>"; }
 hub_login()  { local i l=""; if i=$(hub_idx "$1"); then l="${HUB_LOGINS[$i]:-}"; fi; echo "${l:-${USER:-$(id -un)}}"; }
 hub_has_remote() { git -C "$(hub_path "$1")" remote get-url origin >/dev/null 2>&1; }
@@ -122,9 +134,9 @@ conf_set_hub() {
     /^\[/ && !/^\[hub / { flush() }
     { print } END { flush() }' "$CONF" | conf_write
 }
-conf_add_hub() {  # name remote path login
+conf_add_hub() {  # name remote path login [ssh key]
   { printf '\n[hub %s]\n' "$1"; [ -n "$2" ] && printf 'remote  = %s\n' "$2"; printf 'path    = %s\n' "$3"
-    [ -n "$4" ] && printf 'login   = %s\n' "$4"; true; } >> "$CONF"
+    [ -n "$4" ] && printf 'login   = %s\n' "$4"; [ -n "${5:-}" ] && printf 'ssh_key = %s\n' "$5"; true; } >> "$CONF"
 }
 ensure_conf() {
   [ -f "$CONF" ] && return 0
@@ -878,34 +890,54 @@ cmd_hub() {
   local sub="${1:-}"; shift || true
   case "$sub" in
     init)
-      local name="${1:-}" path="" remote="" login=""; shift || true
+      local name="${1:-}" path="" remote="" login="" key=""; shift || true
       while [ $# -gt 0 ]; do case "$1" in --path) path=$(expand_tilde "$2"); shift 2;; --remote) remote="$2"; shift 2;;
-        --login) login="$2"; shift 2;; *) udie "hub init <name> [--remote URL] [--path P] [--login L]";; esac; done
+        --login) login="$2"; shift 2;; --ssh-key) key=$(expand_tilde "$2"); shift 2;;
+        *) udie "hub init <name> [--remote URL] [--path P] [--login L] [--ssh-key K]";; esac; done
+      [ -z "$key" ] || [ -f "$key" ] || die "no ssh key at $key (xchg key new)"
       [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]] || udie "hub init: hub name must be [A-Za-z0-9_-]"
       ensure_conf >/dev/null; is_hub "$name" && die "hub '$name' already exists (xchg hubs)"
       [ -n "$path" ] || path="$HOME/exchange/$name"; [ -e "$path" ] && die "$path already exists"
       [ -n "$login" ] || login="${USER:-$(id -un)}"
       init_hub_repo "$path" "$login"
       if [ -n "$remote" ]; then git -C "$path" remote add origin "$remote"
+        [ -n "$key" ] && bind_key "$path" "$key"
         git -C "$path" push -q -u origin HEAD || die "hub created at $path, but push to $(masked "$remote") failed (create an empty bare repository and retry: git -C $path push -u origin HEAD)"; fi
-      conf_add_hub "$name" "$remote" "$path" "$login"
-      hub_new "$name" "$path" "$remote" "$login"
+      conf_add_hub "$name" "$remote" "$path" "$login" "$key"
+      hub_new "$name" "$path" "$remote" "$login" "$key"
       [ -n "$CFG_DEFAULT" ] || conf_set_global default "$name"
       register_me "$name"
       echo "hub $name created: $path${remote:+ -> $(masked "$remote")}. Invite the others: xchg hub add $name $(masked "${remote:-<url>}")";;
     add)
-      local name="${1:-}" remote="${2:-}" login="" path=""; shift 2 2>/dev/null || udie "hub add <name> <remote> [--login L] [--path P]"
-      while [ $# -gt 0 ]; do case "$1" in --login) login="$2"; shift 2;; --path) path=$(expand_tilde "$2"); shift 2;; *) udie "hub add: unknown flag $1";; esac; done
+      local name="${1:-}" remote="${2:-}" login="" path="" key=""; shift 2 2>/dev/null || udie "hub add <name> <remote> [--login L] [--path P] [--ssh-key K]"
+      while [ $# -gt 0 ]; do case "$1" in --login) login="$2"; shift 2;; --path) path=$(expand_tilde "$2"); shift 2;;
+        --ssh-key) key=$(expand_tilde "$2"); shift 2;; *) udie "hub add: unknown flag $1";; esac; done
+      [ -z "$key" ] || [ -f "$key" ] || die "no ssh key at $key (xchg key new)"
       [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]] || udie "hub add: hub name must be [A-Za-z0-9_-]"
       ensure_conf >/dev/null; is_hub "$name" && die "hub '$name' already exists (xchg hubs)"
       [ -n "$path" ] || path="$HOME/exchange/$name"
       if [ -d "$path/.git" ]; then [ "$(git -C "$path" remote get-url origin 2>/dev/null)" = "$remote" ] || die "$path already holds a different clone"; echo "clone already exists: $path"
+      elif [ -n "$key" ]; then GIT_SSH_COMMAND="$(ssh_cmd "$key")" git clone -q "$remote" "$path" || die "clone of $(masked "$remote") with the key $key failed (xchg hub check $name after fixing it)"
       else git clone -q "$remote" "$path" || die "clone of $(masked "$remote") failed"; fi
-      conf_add_hub "$name" "$remote" "$path" "$login"
-      hub_new "$name" "$path" "$remote" "$login"
+      [ -n "$key" ] && bind_key "$path" "$key"
+      conf_add_hub "$name" "$remote" "$path" "$login" "$key"
+      hub_new "$name" "$path" "$remote" "$login" "$key"
       [ -n "$CFG_DEFAULT" ] || conf_set_global default "$name"
-      echo "hub $name connected: $path <- $(masked "$remote")${login:+ (login $login)}"
+      echo "hub $name connected: $path <- $(masked "$remote")${login:+ (login $login)}${key:+ (ssh key $key)}"
       register_me "$name";;
+    key) local name="${1:-}" kp="${2:-}"; [ -n "$kp" ] || udie "hub key <name> <path to key>"; require_hubs
+      kp=$(expand_tilde "$kp"); is_hub "$name" || die "no hub '$name'"; [ -f "$kp" ] || die "no ssh key at $kp (xchg key new)"
+      local d="$(hub_path "$name")"; [ -d "$d/.git" ] && bind_key "$d" "$kp"
+      conf_set_hub "$name" ssh_key "$kp"; hub_set "$name" key "$kp"
+      echo "hub $name now uses the ssh key $kp";;
+    check) local name="${1:-}"; [ -n "$name" ] || udie "hub check <name>"; require_hubs; is_hub "$name" || die "no hub '$name'"
+      local r host k sc; r=$(hub_remote "$name"); [ -n "$r" ] || r=$(git -C "$(hub_path "$name")" remote get-url origin 2>/dev/null || true)
+      [ -n "$r" ] || die "hub $name is local: nothing to check"
+      case "$r" in *://*) host=${r#*://}; host=${host%%/*};; *:*) host=${r%%:*};; *) die "hub $name: remote $(masked "$r") is a path, not ssh";; esac
+      k=$(hub_key "$name"); sc="ssh"; [ -n "$k" ] && sc=$(ssh_cmd "$k")
+      # the server answers a keyless ssh session with a greeting; anything else means the key is not accepted
+      if eval "$sc -o BatchMode=yes -o ConnectTimeout=10 $host" >/dev/null 2>&1; then echo "hub $name: the key is accepted by $host"
+      else die "hub $name: $host did not accept the key${k:+ $k} (register the public key ${k:+${k}.pub }with the hub owner)"; fi;;
     rm) local name="${1:-}"; [ -n "$name" ] || udie "hub rm <name>"; require_hubs; is_hub "$name" || die "no hub '$name'"
       conf_rm_hub "$name"; [ "$CFG_DEFAULT" = "$name" ] && conf_set_global default ""
       echo "hub $name removed from the registry; the clone at $(hub_path "$name") is left in place";;
@@ -913,8 +945,25 @@ cmd_hub() {
       local d="$(hub_path "$name")"; if hub_has_remote "$name"; then git -C "$d" remote set-url origin "$url"; else git -C "$d" remote add origin "$url"; fi
       git -C "$d" push -q -u origin HEAD || die "push to $(masked "$url") failed (the remote is set, retry: git -C $d push -u origin HEAD)"
       conf_set_hub "$name" remote "$url"; echo "hub $name now syncs with $(masked "$url")";;
-    *) udie "hub init <name> [--remote URL] | hub add <name> <remote> [--login L] | hub rm <name> | hub remote <name> <url>";;
+    *) udie "hub init <name> [--remote URL] [--ssh-key K] | hub add <name> <remote> [--login L] [--ssh-key K] | hub key <name> <path> | hub check <name> | hub rm <name> | hub remote <name> <url>";;
   esac
+}
+# A key of xchg's own: an agent is usually allowed to run ssh-keygen but not to write into ~/.ssh.
+cmd_key() {
+  local sub="${1:-}" name=xchg; shift || true
+  [ "$sub" = new ] || udie "key new [--name N]"
+  while [ $# -gt 0 ]; do case "$1" in --name) name="$2"; shift 2;; *) udie "key new [--name N]";; esac; done
+  [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]] || udie "key new: name must be [A-Za-z0-9_-]"
+  have ssh-keygen || die "no ssh-keygen"
+  mkdir -p "$KEYS_DIR"; chmod 700 "$KEYS_DIR"
+  local f="$KEYS_DIR/${name}_ed25519"
+  if [ -f "$f" ]; then echo "the key already exists, keeping it: $f"
+  else
+    ssh-keygen -q -t ed25519 -N '' -C "xchg $name" -f "$f" || die "ssh-keygen failed"
+    chmod 600 "$f"; echo "key created: $f"
+  fi
+  echo "public key (give it to the hub owner, then: xchg hub add <name> <remote> --ssh-key $f):"
+  cat "$f.pub"
 }
 cmd_log() { require_hubs; local n=20 hubs h; while [ $# -gt 0 ]; do case "$1" in --hub) OPT_HUB="$2"; shift 2;; *) n="$1"; shift;; esac; done
   hubs=$(hub_filter); sync_hubs $hubs; for h in $hubs; do echo "== $h"; git -C "$(hub_path "$h")" log --oneline -n "$n"; done; }
@@ -1059,8 +1108,9 @@ Address: [hub:]part[:part] — all | @project | person | @project:person (part o
   contact rm <login> [--hub H]              remove a person from the contact book (the address is gone)
   agent                                     my addresses in this session
   projects [--hub H] | projects add <name> [--repo <where the code is>] [--owner login]
-  hubs | hub init <name> [--remote URL] | hub add <name> <remote> [--login L]
-       | hub rm <name> | hub remote <name> <url>
+  hubs | hub init <name> [--remote URL] | hub add <name> <remote> [--login L] [--ssh-key K]
+       | hub key <name> <path> | hub check <name> | hub rm <name> | hub remote <name> <url>
+  key new [--name N]                        an ssh key for the hubs, outside ~/.ssh
   log [n] [--hub H] | sync [--hub H] | status | install | version
 H
 }
@@ -1082,6 +1132,7 @@ main() {
     contact) shift; cmd_contact "$@";; agent) cmd_agent;;              projects) shift; cmd_projects "$@";;
     hubs) cmd_hubs;;                 hub) shift; cmd_hub "$@";;        log) shift; cmd_log "$@";;
     sync) shift; cmd_sync "$@";;     status) cmd_status;;              install) cmd_install;;
+    key) shift; cmd_key "$@";;
     *) echo "xchg: unknown command '$1' (xchg help)" >&2; exit 2;;
   esac
   [ "$PUSH_FAILED" = 0 ] || return 4   # written locally, not delivered to the hub

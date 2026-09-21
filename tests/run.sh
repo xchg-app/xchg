@@ -71,6 +71,34 @@ run "$X" hub add tok3 "https://SECRET@example.invalid/git/tok3.git" --login alic
 assert_not_contains "$OUT" "SECRET"; assert_contains "$OUT" "https://***@example.invalid"
 cp "$SB/conf.bak" "$CONFF"; rm -rf "$H/exchange/tok2"
 
+t "an ssh key of its own, per hub"
+command -v ssh-keygen >/dev/null || { ok "no ssh-keygen: key tests skipped"; SKIP_KEYS=1; }
+if [ "${SKIP_KEYS:-0}" = 0 ]; then
+run "$X" key new --name demo; assert_eq "$RC" 0 "key new"
+K="$H/.config/xchg/keys/demo_ed25519"
+[ -f "$K" ] && ok "the key is created outside ~/.ssh" || fail "no key at $K"
+assert_eq "$(ls -ld "$H/.config/xchg/keys" | cut -c1-10)" "drwx------" "the key directory is private"
+assert_eq "$(ls -l "$K" | cut -c1-10)" "-rw-------" "the key file is private"
+assert_contains "$OUT" "ssh-ed25519" "the public key is printed"
+BEFORE=$(cat "$K")
+run "$X" key new --name demo; assert_contains "$OUT" "already exists"
+assert_eq "$(cat "$K")" "$BEFORE" "an existing key is never overwritten"
+run "$X" hub add keyed "$SB/bare-work" --login alice --ssh-key "$K"; assert_eq "$RC" 0 "hub add with a key"
+assert_contains "$(git -C "$H/exchange/keyed" config core.sshCommand)" "$K" "the clone remembers the key"
+assert_contains "$(git -C "$H/exchange/keyed" config core.sshCommand)" "IdentitiesOnly=yes"
+assert_contains "$(git -C "$H/exchange/keyed" config core.sshCommand)" "$H/.config/xchg/known_hosts" "ssh keeps its known hosts with the config, not in ~/.ssh"
+assert_contains "$(cat "$H/.config/xchg/xchg.conf")" "ssh_key = $K" "the key is written to the registry"
+run "$X" hubs; assert_eq "$RC" 0 "a registry with ssh_key still parses"
+run "$X" key new --name other >/dev/null; K2="$H/.config/xchg/keys/other_ed25519"
+run "$X" hub key keyed "$K2"; assert_eq "$RC" 0 "hub key"
+assert_contains "$(git -C "$H/exchange/keyed" config core.sshCommand)" "$K2" "the clone takes the new key"
+assert_contains "$(cat "$H/.config/xchg/xchg.conf")" "ssh_key = $K2" "and so does the registry"
+run "$X" hub key keyed "$H/nosuch"; assert_eq "$RC" 1 "a missing key file is an error"
+run "$X" hub add bad "$SB/bare-work" --ssh-key "$H/nosuch"; assert_eq "$RC" 1 "hub add checks the key file too"
+run "$X" hub check keyed; assert_eq "$RC" 1 "a local hub has nothing to check"; assert_contains "$OUT" "not ssh"
+run "$X" hub rm keyed >/dev/null
+fi
+
 t "harness packages"
 # every package is built by tools/package.sh; the package repositories hold nothing else
 PKG="$SB/packages"

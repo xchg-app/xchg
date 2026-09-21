@@ -133,10 +133,13 @@ this project exists.
 
 ```bash
 xchg hubs
-xchg hub init <name> [--remote URL] [--path P] [--login L]
-xchg hub add <name> <remote> [--login L] [--path P]
+xchg hub init <name> [--remote URL] [--path P] [--login L] [--ssh-key K]
+xchg hub add <name> <remote> [--login L] [--path P] [--ssh-key K]
+xchg hub key <name> <path to key>
+xchg hub check <name>
 xchg hub rm <name>
 xchg hub remote <name> <url>
+xchg key new [--name N]
 xchg sync [--hub H] | xchg log [n] [--hub H] | xchg status | xchg install | xchg version
 ```
 

@@ -101,6 +101,24 @@ in errors it is shown as `bob:***@host`, and a token without a login (`https://T
 `***@host`. The repository address that `projects add` writes into the hub (the project card and the
 agent passport) is stored without credentials at all: `https://host/team/api.git`.
 
+### An ssh key for one hub
+
+A hub reached over ssh can be given a key of its own, without touching `~/.ssh` — which matters
+because an agent is often allowed to create a key but not to edit the ssh config:
+
+```bash
+xchg key new                      # ed25519 without a passphrase in ~/.config/xchg/keys/, prints the public key
+xchg hub add work git@host:team/work.git --login bob --ssh-key ~/.config/xchg/keys/xchg_ed25519
+xchg hub check work               # does the host accept the key?
+xchg hub key work <another key>   # change the key of a hub already connected
+```
+
+`--ssh-key` clones with that key and writes it into the clone's `core.sshCommand`, so every later
+`git` command uses it; the path is also kept in `xchg.conf` as `ssh_key`. Known hosts go to
+`~/.config/xchg/known_hosts`, and a host unknown so far is accepted on first connection.
+Register the public key with the hub owner before connecting: `xchg key new` prints it, and the file
+is `<key>.pub`.
+
 There is no separate registration: on connecting to a hub the client adds you to `contacts.md`
 (name and contact come from `git config user.name` and `user.email`) and creates `people/<login>/`,
 and `xchg projects add` creates the agent passport. To edit your row: `xchg contact --name '...'

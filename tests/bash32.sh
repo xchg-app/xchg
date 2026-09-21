@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 command -v docker >/dev/null || { echo "нужен docker" >&2; exit 2; }
 exec docker run --rm -v "$ROOT":/xchg -w /xchg bash:3.2 bash -c '
-  apk add --no-cache -q git coreutils findutils grep sed gawk jq python3 >/dev/null
+  apk add --no-cache -q git coreutils findutils grep sed gawk jq python3 openssh-keygen >/dev/null
   git config --global --add safe.directory /xchg
   export USER=tester
   echo "bash $BASH_VERSION"
