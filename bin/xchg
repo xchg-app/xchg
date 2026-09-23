@@ -5,6 +5,7 @@ set -euo pipefail
 
 XCHG_CONTRACT=6                        # hub contract version this client understands
 NAME_RE='^[A-Za-z0-9._-]+$'
+ATT_HASH_RE='^[0-9a-f]{40}([0-9a-f]{24})?$'   # a git blob hash, SHA-1 or SHA-256
 PROJ_RE='^[a-z0-9._-]+$'
 
 # --- where the client itself lives (self-update and symlinks) ----------------------------
@@ -432,12 +433,14 @@ list_addr() {  # <hub> <address> -> inbox lines
     if [ "$k" = task ]; then :
     elif [ "$SHOW_HISTORY" = 1 ]; then :
     elif is_read "$h" "$rel" "$b"; then continue; fi
-    printf '%-8s %-12s %-5s %-44s %-12s %s\n' "$h" "$(addr_label "$h" "$rel")" \
-      "$([ "$k" = task ] && echo task || echo note)" "$rel/$b" "$(meta from "$f")" "$(title "$f")"
+    local na; na=$(att_links "$f" | grep -c . || true)
+    printf '%-8s %-12s %-5s %-44s %-12s %s%s\n' "$h" "$(addr_label "$h" "$rel")" \
+      "$([ "$k" = task ] && echo task || echo note)" "$rel/$b" "$(meta from "$f")" "$(title "$f")" \
+      "$([ "$na" -gt 0 ] && echo " [+$na $(plural "$na" file files)]")"
   done < <(msg_files "$(hub_path "$h")/$rel")
   return 0
 }
-write_msg() {  # <hub> <address> <kind> <from> <to> <slug> <re> <ref> <forwarded_from> <body> -> path
+write_msg() {  # <hub> <address> <kind> <from> <to> <slug> <re> <ref> <forwarded_from> <body> [attachments] -> path
   local d="$(hub_path "$1")" f="$2/$(date -u +%Y%m%d-%H%M%S)_${4//\//-}_$6.md"
   mkdir -p "$d/$2"
   { printf -- '---\nfrom: %s\nto: %s\nkind: %s\n' "$4" "$5" "$3"
@@ -445,6 +448,7 @@ write_msg() {  # <hub> <address> <kind> <from> <to> <slug> <re> <ref> <forwarded
     [ -n "$7" ] && printf 're: %s\n' "$(basename "$7")"
     [ -n "$8" ] && printf 'ref: %s\n' "$8"
     [ -n "$9" ] && printf 'forwarded_from: %s\n' "$9"
+    [ -n "${11:-}" ] && printf 'attachments: %s\n' "${11}"
     printf -- '---\n%s\n' "${10}"; } > "$d/$f"
   git -C "$d" add "$f"; echo "$f"
 }
@@ -519,6 +523,84 @@ cmd_inbox() {
   others=$(others_note all $hubs); unsent=$(unsent_warn $hubs)
   [ -n "$out" ] && echo "$out" || echo "no new messages"
   [ -n "$others" ] && echo "$others"; [ -n "$unsent" ] && echo "$unsent"; return 0
+}
+# --- attachments -------------------------------------------------------------------------------
+# A file travels as a root commit holding only that file, under refs/xchg/att/<blob hash>. A normal
+# pull fetches branches only, so nobody downloads what they don't open; the message carries links,
+# att:<blob>/<name>, in its attachments: header. The hash is git's own: git checks the content on
+# fetch. No size limit: that is the hosting's business. Bytes go in with --no-filters and come out with
+# cat-file blob, or a CRLF conversion would change them.
+ATT_REF=refs/xchg/att
+att_name() {  # <file name> -> a name safe as one path component
+  local n; n=$(basename "$1" | LC_ALL=C tr -c 'A-Za-z0-9._\n-' '_')
+  case "$n" in ''|.|..) n=file;; esac; echo "$n"
+}
+att_parse() {  # <att:blob/name> -> ATT_BLOB ATT_NAME
+  local l="${1#att:}"; ATT_BLOB="${l%%/*}"; ATT_NAME=$(att_name "${l#*/}")
+  [[ "$1" == att:* ]] && [[ "$ATT_BLOB" =~ $ATT_HASH_RE ]] || udie "not an attachment link: $1 (att:<hash>/<name>)"
+}
+att_put() {  # <hub> <file> -> att:<blob>/<name>; the hub gets it before the message that links to it
+  local h="$1" src="$2"; local d="$(hub_path "$h")" name blob tree c err
+  [ -f "$src" ] || die "no file to attach: $src"
+  name=$(att_name "$src")
+  blob=$(git -C "$d" hash-object -w --no-filters --stdin < "$src") || die "cannot store $src in hub $h"
+  if ! git -C "$d" rev-parse -q --verify "$ATT_REF/$blob" >/dev/null; then
+    tree=$(printf '100644 blob %s\t%s\n' "$blob" "$name" | git -C "$d" mktree)
+    c=$(GIT_AUTHOR_NAME="$(hub_login "$h")" GIT_AUTHOR_EMAIL="$(hub_login "$h")@xchg" \
+        GIT_COMMITTER_NAME="$(hub_login "$h")" GIT_COMMITTER_EMAIL="$(hub_login "$h")@xchg" \
+        git -C "$d" commit-tree "$tree" -m "attachment $name")
+    git -C "$d" update-ref "$ATT_REF/$blob" "$c"
+  fi
+  if hub_has_remote "$h"; then
+    # the same content under the same ref may already be there, pushed by someone else: that is fine
+    if ! err=$(git -C "$d" push -q origin "$ATT_REF/$blob:$ATT_REF/$blob" 2>&1) \
+       && ! git -C "$d" ls-remote --exit-code origin "$ATT_REF/$blob" >/dev/null 2>&1; then
+      local why; why=$(printf '%s\n' "$err" | hub_refusal)
+      die "$src was not uploaded to hub $h, nothing is sent${why:+: $why}"
+    fi
+  fi
+  echo "att:$blob/$name"
+}
+att_get() {  # <hub> <link> <dir or ""> -> the path of the file on disk
+  local h="$1"; local d="$(hub_path "$h")" out
+  att_parse "$2"
+  if [ "$(git -C "$d" cat-file -t "$ATT_BLOB" 2>/dev/null)" != blob ]; then
+    hub_has_remote "$h" && git -C "$d" fetch -q origin "$ATT_REF/$ATT_BLOB:$ATT_REF/$ATT_BLOB" 2>/dev/null || true
+    [ "$(git -C "$d" cat-file -t "$ATT_BLOB" 2>/dev/null)" = blob ] || die "attachment $ATT_NAME is not in hub $h ($ATT_BLOB)"
+  fi
+  out="${3:-$d/.git/xchg-att/$ATT_BLOB}"; mkdir -p "$out"
+  git -C "$d" cat-file blob "$ATT_BLOB" > "$out/$ATT_NAME"; echo "$out/$ATT_NAME"
+}
+att_links() { local a; a=$(meta attachments "$1"); [ -n "$a" ] && printf '%s\n' $a; return 0; }  # <message>
+upload_all() {  # <hub> <file>... -> the links, space-separated
+  local h="$1" f out=""; shift; for f in "$@"; do out="$out${out:+ }$(att_put "$h" "$f")" || exit 1; done; echo "$out"
+}
+cmd_attach() {  # put files into a hub and print links to paste into a message
+  require_hubs; local files=() f h
+  while [ $# -gt 0 ]; do case "$1" in --hub) OPT_HUB="$2"; shift 2;; *) files[${#files[@]}]="$1"; shift;; esac; done
+  [ ${#files[@]} -gt 0 ] || udie "attach <file>... [--hub H]"
+  h="${OPT_HUB:-$(default_hub)}"; is_hub "$h" || die "no hub '$h'"; check_contract "$h"
+  for f in "${files[@]}"; do att_put "$h" "$f"; done
+}
+cmd_attachments() {  # what a message carries
+  require_hubs; [ -n "${1:-}" ] || udie "attachments <file>"; locate "$1"
+  local d="$(hub_path "$L_HUB")" f l sz; f="$d/$L_REL"; [ -f "$f" ] || die "no file $L_HUB:$L_REL"
+  while IFS= read -r l; do [ -n "$l" ] || continue; att_parse "$l"
+    if sz=$(git -C "$d" cat-file -s "$ATT_BLOB" 2>/dev/null); then printf '%s  %s bytes\n' "$l" "$sz"
+    else printf '%s  not downloaded (xchg get)\n' "$l"; fi
+  done < <(att_links "$f")
+}
+cmd_get() {  # download the attachments of a message, or one link, and print where they are
+  require_hubs; local what="" to=""
+  while [ $# -gt 0 ]; do case "$1" in --to) to=$(expand_tilde "$2"); shift 2;; --hub) OPT_HUB="$2"; shift 2;; *) what="$1"; shift;; esac; done
+  [ -n "$what" ] || udie "get <file | att:hash/name> [--to DIR] [--hub H]"
+  local h l n=0
+  case "$what" in
+    att:*) h="${OPT_HUB:-$(default_hub)}"; is_hub "$h" || die "no hub '$h'"; att_get "$h" "$what" "$to";;
+    *) locate "$what"; h="$L_HUB"; local f="$(hub_path "$h")/$L_REL"; [ -f "$f" ] || die "no file $h:$L_REL"
+       while IFS= read -r l; do [ -n "$l" ] || continue; att_get "$h" "$l" "$to"; n=$((n+1)); done < <(att_links "$f")
+       [ "$n" -gt 0 ] || echo "no attachments in $h:$L_REL";;
+  esac
 }
 inbox_lines() {  # <hub...> -> inbox lines for this session's addresses (with --all, other projects too)
   local h rel
@@ -684,26 +766,29 @@ cmd_thread() {
 
 # --- commands: writing -------------------------------------------------------------------------
 send_common() {  # <kind> <address> <slug> [flags] < body
-  local kind="$1" to="$2" slug="$3"; shift 3; local re="" ref=""
-  while [ $# -gt 0 ]; do case "$1" in --re) re="$2"; shift 2;; --ref) ref="$2"; shift 2;; *) udie "unknown flag $1";; esac; done
+  local kind="$1" to="$2" slug="$3"; shift 3; local re="" ref="" att=() links=""
+  while [ $# -gt 0 ]; do case "$1" in --re) re="$2"; shift 2;; --ref) ref="$2"; shift 2;;
+    --attach) att[${#att[@]}]="$2"; shift 2;; *) udie "unknown flag $1";; esac; done
   [[ "$slug" =~ $NAME_RE ]] || udie "slug must be [A-Za-z0-9._-]"
   [ -t 0 ] && udie "the message body is expected on stdin"
   local body; body=$(cat)
   sync_hubs ${HUBS[@]+"${HUBS[@]}"}; parse_addr "$to"; check_contract "$A_HUB"
+  [ ${#att[@]} -eq 0 ] || links=$(upload_all "$A_HUB" "${att[@]}") || exit 1
   local from f; from=$(sender_id "$A_HUB")
-  f=$(write_msg "$A_HUB" "$A_REL" "$kind" "$from" "$A_LABEL" "$slug" "$re" "$ref" "" "$body")
+  f=$(write_msg "$A_HUB" "$A_REL" "$kind" "$from" "$A_LABEL" "$slug" "$re" "$ref" "" "$body" "$links")
   warn_secrets "$body"
   [ "$kind" = note ] && [ -z "$ref" ] && warn "without --ref the note doesn't say where the current state lives (repository, file, PR)"
   hub_push "$A_HUB" "[xchg] $from -> $A_LABEL: $slug" || true
   mark_read "$A_HUB" "$A_REL" "$f"; mark_shown "$A_HUB" "$(basename "$f")"
   echo "sent: $A_HUB:$f"
 }
-cmd_send() { require_hubs; [ $# -ge 2 ] || udie "send <address> <slug> [--re file] [--ref where] < body"; send_common task "$@"; }
-cmd_post() { require_hubs; [ $# -ge 2 ] || udie "post <address> <slug> [--re file] [--ref where] < body"; send_common note "$@"; }
+cmd_send() { require_hubs; [ $# -ge 2 ] || udie "send <address> <slug> [--re file] [--ref where] [--attach file]... < body"; send_common task "$@"; }
+cmd_post() { require_hubs; [ $# -ge 2 ] || udie "post <address> <slug> [--re file] [--ref where] [--attach file]... < body"; send_common note "$@"; }
 cmd_reply() {
-  require_hubs; [ $# -ge 2 ] || udie "reply <file> <slug> [--task|--note]"
-  local src="$1" slug="$2"; shift 2; local kind=task
-  while [ $# -gt 0 ]; do case "$1" in --task) kind=task; shift;; --note) kind=note; shift;; *) udie "reply: unknown flag $1";; esac; done
+  require_hubs; [ $# -ge 2 ] || udie "reply <file> <slug> [--task|--note] [--attach file]..."
+  local src="$1" slug="$2"; shift 2; local kind=task att=() links=""
+  while [ $# -gt 0 ]; do case "$1" in --task) kind=task; shift;; --note) kind=note; shift;;
+    --attach) att[${#att[@]}]="$2"; shift 2;; *) udie "reply: unknown flag $1";; esac; done
   [ -t 0 ] && udie "reply: the reply body is expected on stdin"
   local body; body=$(cat)
   sync_hubs ${HUBS[@]+"${HUBS[@]}"}; locate "$src"
@@ -711,8 +796,9 @@ cmd_reply() {
   local from to; from=$(meta from "$f"); [ -n "$from" ] || die "$L_REL has no from field: nobody to reply to"
   case "$from" in */*) to="$L_HUB:@${from#*/}:${from%%/*}";; *) to="$L_HUB:$from";; esac
   parse_addr "$to"; check_contract "$A_HUB"
+  [ ${#att[@]} -eq 0 ] || links=$(upload_all "$A_HUB" "${att[@]}") || exit 1
   local me nf; me=$(sender_id "$A_HUB")
-  nf=$(write_msg "$A_HUB" "$A_REL" "$kind" "$me" "$A_LABEL" "$slug" "$(basename "$L_REL")" "" "" "$body")
+  nf=$(write_msg "$A_HUB" "$A_REL" "$kind" "$me" "$A_LABEL" "$slug" "$(basename "$L_REL")" "" "" "$body" "$links")
   warn_secrets "$body"
   mark_shown "$A_HUB" "$(basename "$nf")"; hub_push "$A_HUB" "[xchg] $me -> $A_LABEL: $slug (reply)" || true; echo "sent: $A_HUB:$nf"
 }
@@ -766,7 +852,13 @@ cmd_forward() {
   local from body slug kind; from=$(sender_id "$A_HUB"); kind=$(kind_of "$sd")
   slug=$(basename "$L_REL" .md); slug="${slug#*_}"; slug="${slug#*_}"; slug="fwd-${slug:-msg}"
   body=$( [ -n "$note" ] && printf '%s\n\n' "$note"; printf -- '--- forwarded from %s (from %s) ---\n' "$L_HUB" "$(meta from "$sd")"; body_of "$sd" )
-  local f; f=$(write_msg "$A_HUB" "$A_REL" "$kind" "$from" "$A_LABEL" "$slug" "" "$(meta ref "$sd")" "$L_HUB/$L_REL" "$body")
+  # a link is valid in its own hub only: the files cross over with the message
+  local links="" l tmp p; tmp=$(mktemp -d)
+  while IFS= read -r l; do [ -n "$l" ] || continue
+    p=$(att_get "$L_HUB" "$l" "$tmp/$(printf '%s' "$l" | cut -c5-12)") || { rm -rf "$tmp"; exit 1; }
+    links="$links${links:+ }$(att_put "$A_HUB" "$p")" || { rm -rf "$tmp"; exit 1; }
+  done < <(att_links "$sd"); rm -rf "$tmp"
+  local f; f=$(write_msg "$A_HUB" "$A_REL" "$kind" "$from" "$A_LABEL" "$slug" "" "$(meta ref "$sd")" "$L_HUB/$L_REL" "$body" "$links")
   mark_shown "$A_HUB" "$(basename "$f")"; hub_push "$A_HUB" "[xchg] $from -> $A_LABEL: $slug (forwarded)" || true; echo "forwarded: $A_HUB:$f"
 }
 
@@ -1106,9 +1198,12 @@ Address: [hub:]part[:part] — all | @project | person | @project:person (part o
                                                  what came to me
   wait [--timeout sec] [--interval sec]     wait for a new message without the model (0 arrived, 3 timeout)
   read <file>                               read a whole message
-  send <address> <slug> [--re f] [--ref x]  task: do it once, it gets closed
-  post <address> <slug> [--re f] [--ref x]  note: for everyone to read, never closed
-  reply <file> <slug> [--note]              reply to the sender (a task by default)
+  send <address> <slug> [--re f] [--ref x] [--attach file]...   task: do it once, it gets closed
+  post <address> <slug> [--re f] [--ref x] [--attach file]...   note: for everyone to read, never closed
+  reply <file> <slug> [--note] [--attach file]...   reply to the sender (a task by default)
+  attach <file>... [--hub H]                put files into the hub, print links to paste into a message
+  attachments <file>                        what a message carries
+  get <file | att:hash/name> [--to DIR]     download attachments, print where they are
   claim <file>                              take a task (atomic, through git)
   done <file>                               close a task (moves to done/)
   seen [address|file]                       mark notes as read
@@ -1146,6 +1241,7 @@ main() {
     hubs) cmd_hubs;;                 hub) shift; cmd_hub "$@";;        log) shift; cmd_log "$@";;
     sync) shift; cmd_sync "$@";;     status) cmd_status;;              install) cmd_install;;
     key) shift; cmd_key "$@";;
+    attach) shift; cmd_attach "$@";; attachments) shift; cmd_attachments "$@";; get) shift; cmd_get "$@";;
     *) echo "xchg: unknown command '$1' (xchg help)" >&2; exit 2;;
   esac
   [ "$PUSH_FAILED" = 0 ] || return 4   # written locally, not delivered to the hub

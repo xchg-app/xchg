@@ -417,6 +417,55 @@ assert_contains "$(cat "$FW")" "forwarded_from: work/projects/api/alice/"; asser
 assert_contains "$(cat "$FW")" "--- forwarded from work (from bob/api) ---"
 [ -e "$S" ] && ok "the original is untouched" || fail "the original is gone"
 
+t "attachments: files under their own refs, fetched on demand"
+printf '\x89PNG\r\n\x1a\n\x00\x01binary' > "$SB/shot.png"
+printf '<html>\r\n<body>crlf stays</body>\r\n</html>\r\n' > "$SB/page.html"
+git config --global core.autocrlf true   # the setting that would rewrite line endings if bytes went through filters
+run in_api "$X" send work:@api:alice pics --attach "$SB/shot.png" --attach "$SB/page.html" <<< '# Two files'
+assert_eq "$RC" 0 "send with attachments"
+M=$(ls -t "$H/exchange/work/projects/api/alice/"*pics.md | head -1)
+A=$(sed -n 's/^attachments: //p' "$M")
+assert_contains "$A" "/shot.png"; assert_contains "$A" "/page.html"; ok "the message carries links only"
+HP=$(printf '%s\n' $A | grep page.html | sed 's#^att:##; s#/.*##')
+assert_eq "$(git -C "$SB/bare-work" cat-file -t "refs/xchg/att/$HP^{tree}" 2>/dev/null)" tree "the file sits in the hub under refs/xchg/att/<hash>"
+git -C "$W2" pull -q
+[ -z "$(git -C "$W2" for-each-ref refs/xchg)" ] && ok "a normal pull doesn't bring attachment refs" || fail "pull brought refs/xchg"
+git -C "$W2" cat-file -e "$HP" 2>/dev/null && fail "a normal pull brought the file" || ok "and doesn't bring the file"
+run in_api "$X" inbox; assert_contains "$OUT" "Two files [+2 files]"
+# file:// and not a bare path: a clone from a plain path copies the whole object store, like no server does
+run "$X" hub add work2 "file://$SB/bare-work" --path "$SB/w3" --login alice; assert_eq "$RC" 0 "a second clone of the same hub"
+M2="work2:${M#$H/exchange/work/}"
+run "$X" attachments "$M2"; assert_contains "$OUT" "not downloaded"
+run "$X" get "$M2"; assert_eq "$RC" 0 "get fetches the files from the hub"
+P=$(printf '%s\n' "$OUT" | grep page.html); S=$(printf '%s\n' "$OUT" | grep shot.png)
+cmp -s "$P" "$SB/page.html" && ok "an html page arrives byte for byte, CRLF included" || fail "page.html changed on the way"
+cmp -s "$S" "$SB/shot.png" && ok "a binary file arrives byte for byte" || fail "shot.png changed on the way"
+run "$X" attachments "$M2"; assert_contains "$OUT" "bytes"
+run "$X" get "att:$HP/page.html" --hub work2 --to "$SB/dl"; assert_eq "$OUT" "$SB/dl/page.html" "get by link, into a chosen directory"
+run "$X" get "att:$HP/../../escape.html" --hub work2 --to "$SB/dl"; assert_eq "$OUT" "$SB/dl/escape.html" "a name can't leave the directory"
+run "$X" get "att:nothex/x" --hub work2; assert_eq "$RC" 2 "a malformed link is a usage error"
+run "$X" get "att:0000000000000000000000000000000000000000/x" --hub work2; assert_eq "$RC" 1 "an unknown attachment is an error"
+git config --global --unset core.autocrlf
+n0=$(ls "$H/exchange/work/projects/api/alice/" | wc -l)
+run in_api "$X" send work:@api:alice nofile --attach "$SB/nosuch.png" <<< '# Missing'
+assert_eq "$RC" 1 "a missing file stops the send"
+assert_eq "$(ls "$H/exchange/work/projects/api/alice/" | wc -l)" "$n0" "and no message is written"
+run in_api "$X" attach "$SB/shot.png" --hub work; assert_contains "$OUT" "att:"; assert_contains "$OUT" "/shot.png"
+ok "attach prints a link to paste into a message"
+run in_api "$X" forward "$M" me:@api:alice; assert_eq "$RC" 0 "forward a message with attachments"
+FA=$(ls -t "$H/exchange/me/projects/api/alice/"*fwd-pics*.md | head -1)
+assert_contains "$(cat "$FA")" "attachments: att:"
+run in_api "$X" get "me:${FA#$H/exchange/me/}" --to "$SB/fwd"; cmp -s "$SB/fwd/page.html" "$SB/page.html" && ok "the files crossed into the other hub with the message" || fail "forwarded attachments are missing"
+# a hub that refuses attachment refs says why, and the message is not written
+git init -q --bare "$SB/bare-strict"; git -C "$SB/bare-work" push -q "$SB/bare-strict" main
+printf '#!/bin/sh\nwhile read o n r; do case "$r" in refs/heads/main) ;; *) echo "xchg: the hub lives on main only"; exit 1;; esac; done\n' > "$SB/bare-strict/hooks/pre-receive"; chmod +x "$SB/bare-strict/hooks/pre-receive"
+run "$X" hub add strict "$SB/bare-strict" --path "$SB/w4" --login alice
+n0=$(find "$SB/w4" -name '*.md' | wc -l)
+run in_api "$X" send strict:@api:alice refused --attach "$SB/page.html" <<< '# Refused'
+assert_eq "$RC" 1 "the hub refused the attachment"; assert_contains "$OUT" "the hub lives on main only"
+assert_eq "$(find "$SB/w4" -name '*.md' | wc -l)" "$n0" "nothing is sent"
+run "$X" hub rm strict >/dev/null; run "$X" hub rm work2 >/dev/null
+
 t "failed push: exit 4, sync delivers"
 mv "$SB/bare-work" "$SB/bare-work.off"
 run in_api "$X" send bob offline <<< '# Sent without network'; assert_eq "$RC" 4 "send to an unreachable hub exits 4"

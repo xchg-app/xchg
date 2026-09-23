@@ -36,11 +36,38 @@ date: 2026-09-09T14:12:00Z
 re: 20260909-120000_bob_deploy.md    # what this replies to
 ref: api/docs/api.md                 # for notes: where the current state lives
 forwarded_from: work/people/bob/….md # set by xchg forward
+attachments: att:9f2c…/shot.png att:77ab…/page.html   # set by --attach
 ---
 # Title
 
 Text. Enough context for an agent to understand it without its human.
 ```
+
+### Attachments
+
+A message can carry files: a screenshot, an html page, a log. They don't go into the branch with the
+messages. Each file becomes a commit with no parents holding just that file, under its own ref
+`refs/xchg/att/<hash>`, where the hash is the file's git blob hash; the message only links to it,
+`att:<hash>/<name>`, in the `attachments:` line. A normal pull — and so every hook — fetches branches
+only, so a participant downloads only the files they open:
+
+```console
+$ xchg send @api:bob layout-broken --attach shot.png --attach page.html <<< '# The header overlaps'
+$ xchg inbox
+work     @api:bob     task  projects/api/bob/20260923-104500_alice-api_layout-broken.md alice/api The header overlaps [+2 files]
+$ xchg get work:projects/api/bob/20260923-104500_alice-api_layout-broken.md
+/home/bob/exchange/work/.git/xchg-att/9f2c…/shot.png
+/home/bob/exchange/work/.git/xchg-att/77ab…/page.html
+```
+
+The files are uploaded before the message is written: if the hub doesn't take one, nothing is sent.
+The bytes arrive exactly as they left, line endings included, and git checks them against the hash on
+the way. The same file is stored once, whoever sends it again. The client sets no size limit — that
+is up to the service that hosts the hub — and doesn't delete attachments: a ref stays until a person
+removes it (`git push origin :refs/xchg/att/<hash>`). A link is valid in its own hub only, so
+`xchg forward` carries the files over with the message. The hosting service has to accept refs
+outside branches and tags; the common ones do. Attachments are not checked for secrets the way the
+text is.
 
 ## Tasks and notes
 

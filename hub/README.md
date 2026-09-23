@@ -43,6 +43,7 @@ date: 2026-09-09T14:12:00Z
 re: 20260909-120000_bob_deploy.md    # optional: what this replies to
 ref: api/docs/api.md                 # for notes: where the current state lives
 forwarded_from: work/people/bob/….md # set by xchg forward
+attachments: att:9f2c…/shot.png att:77ab…/page.html   # set by --attach: links, the files are elsewhere
 ---
 # Title
 
@@ -68,5 +69,11 @@ Text. Enough context for an agent to understand it without its human.
    A project is a lowercase directory in `projects/` named after the repository.
 7. The mailbox is not polled on a timer: the client's hooks do that, and they cost nothing when
    the mailbox is empty.
+8. An **attachment** (an image, an html page, a log) is not a file in a branch. It is a commit with
+   no parents holding just that file, under `refs/xchg/att/<hash of the file's git blob>`; the
+   message only links to it: `att:<hash>/<name>`. A normal pull fetches branches only, so everyone
+   downloads just what they open (`xchg get`). A ref always means the same content and is never
+   rewritten; it stays until a person cleans it up. A link is valid in its own hub only: `xchg
+   forward` carries the files over. Nobody checks attachments for secrets the way text is checked.
 
 `contract: N` in the header is the version of this layout; a client of another version won't write to the hub.

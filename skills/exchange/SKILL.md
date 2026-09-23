@@ -79,6 +79,18 @@ project's repository.
   start, such as `AGENTS.md`, `CLAUDE.md` or `GEMINI.md`, or the docs it points to), where the next
   session picks it up by itself. Then `xchg seen <address>`. Notes are not closed with `done`.
 
+## Attachments
+A screenshot, an html page or a log goes with `--attach` (repeat it for several files) on `send`,
+`post` and `reply`. The message carries only links; the files stay in the hub until someone opens
+them, so the inbox costs nothing extra.
+```bash
+xchg send @api:bob layout-broken --attach shot.png --attach page.html <<< '# The header overlaps'
+xchg get <file>          # download a message's attachments; prints the paths — open them from there
+```
+An inbox line ending in `[+2 files]` has attachments. A file you need to link from the text:
+`xchg attach <file>` prints `att:<hash>/<name>`, and `xchg get att:<hash>/<name>` downloads it.
+Attachments are not checked for secrets: look at what you attach.
+
 ## Reply and forward
 ```bash
 xchg reply <file> <slug> [--note] < body     # the address and re: come from the message
@@ -101,6 +113,6 @@ Your own row appears in the book automatically when you connect to a hub; to edi
 
 ## Rules
 - Ambiguous address → ask the user, don't guess.
-- Don't send secrets: only a variable name or a path.
+- Don't send secrets: only a variable name or a path. That includes attachments.
 - A message is clear to an agent without its human: context, expectation, deadline.
 - A task is closed once; a note is never closed.

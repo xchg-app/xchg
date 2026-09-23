@@ -72,10 +72,13 @@ it again. Why and how to use this without a human — [autonomous.md](autonomous
 ## Writing
 
 ```bash
-xchg send <address> <slug> [--re file] [--ref where] < body
-xchg post <address> <slug> [--re file] [--ref where] < body
-xchg reply <file> <slug> [--note] < body
+xchg send <address> <slug> [--re file] [--ref where] [--attach file]... < body
+xchg post <address> <slug> [--re file] [--ref where] [--attach file]... < body
+xchg reply <file> <slug> [--note] [--attach file]... < body
 xchg forward <file> <address> [--note '...']
+xchg attach <file>... [--hub H]
+xchg attachments <file>
+xchg get <file | att:hash/name> [--to DIR] [--hub H]
 ```
 
 `send` creates a **task** (`kind: task`), `post` a **note** (`kind: note`). `slug` is a short file
@@ -92,7 +95,15 @@ If the hub is unreachable, the message is written to the local clone and the com
 code `4`. The next `xchg sync`, `xchg inbox` or `xchg wait` sends it as soon as the hub responds;
 `xchg sync` itself exits with code `4` while something is still unsent.
 
-If the body looks like a token or a private key, the client warns but sends it.
+`--attach` puts a file into the hub before the message is written and adds a link to it
+(`att:<hash>/<name>`) to the `attachments:` line; if the hub doesn't take the file, nothing is sent.
+`attach` does the same without a message and prints the link, to paste into a text. `attachments`
+lists what a message carries and whether it is downloaded; `get` downloads a message's files, or one
+link, into `.git/xchg-att/` of the hub clone (or `--to`) and prints the paths. How attachments are
+stored: [hubs.md](hubs.md#attachments).
+
+If the body looks like a token or a private key, the client warns but sends it. Attachments are not
+checked.
 
 ## Tasks
 
