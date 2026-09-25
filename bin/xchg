@@ -532,7 +532,9 @@ cmd_inbox() {
 # cat-file blob, or a CRLF conversion would change them.
 ATT_REF=refs/xchg/att
 att_name() {  # <file name> -> a name safe as one path component
-  local n; n=$(basename "$1" | LC_ALL=C tr -c 'A-Za-z0-9._\n-' '_')
+  # bytes of non-ASCII letters pass as they are (UTF-8 never has a byte < 0x80 inside a letter);
+  # spaces and ASCII punctuation become one '_': a link is a word in the header
+  local n; n=$(basename "$1" | LC_ALL=C tr -c 'A-Za-z0-9._\n\200-\377-' '_' | LC_ALL=C tr -s '_')
   case "$n" in ''|.|..) n=file;; esac; echo "$n"
 }
 att_parse() {  # <att:blob/name> -> ATT_BLOB ATT_NAME

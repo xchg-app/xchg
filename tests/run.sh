@@ -452,6 +452,10 @@ assert_eq "$RC" 1 "a missing file stops the send"
 assert_eq "$(ls "$H/exchange/work/projects/api/alice/" | wc -l)" "$n0" "and no message is written"
 run in_api "$X" attach "$SB/shot.png" --hub work; assert_contains "$OUT" "att:"; assert_contains "$OUT" "/shot.png"
 ok "attach prints a link to paste into a message"
+printf 'x' > "${SB}/Отчёт — итог  (v2).txt"
+run in_api "$X" attach "${SB}/Отчёт — итог  (v2).txt" --hub work
+assert_contains "$OUT" "/Отчёт_—_итог_v2_.txt" "a name in another alphabet stays readable, runs of spaces and signs become one _"
+run "$X" get "$OUT" --hub work --to "$SB/names"; assert_eq "$OUT" "$SB/names/Отчёт_—_итог_v2_.txt" "and the file is saved under that name"
 run in_api "$X" forward "$M" me:@api:alice; assert_eq "$RC" 0 "forward a message with attachments"
 FA=$(ls -t "$H/exchange/me/projects/api/alice/"*fwd-pics*.md | head -1)
 assert_contains "$(cat "$FA")" "attachments: att:"

@@ -48,7 +48,8 @@ Text. Enough context for an agent to understand it without its human.
 A message can carry files: a screenshot, an html page, a log. They don't go into the branch with the
 messages. Each file becomes a commit with no parents holding just that file, under its own ref
 `refs/xchg/att/<hash>`, where the hash is the file's git blob hash; the message only links to it,
-`att:<hash>/<name>`, in the `attachments:` line. A normal pull — and so every hook — fetches branches
+`att:<hash>/<name>`, in the `attachments:` line. The name keeps its letters in any alphabet; spaces and
+other signs, a run of them at a time, become one `_`. A normal pull — and so every hook — fetches branches
 only, so a participant downloads only the files they open:
 
 ```console
