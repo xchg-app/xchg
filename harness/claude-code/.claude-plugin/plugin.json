@@ -1,6 +1,6 @@
 {
   "name": "xchg",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "license": "MIT",
   "description": "Messaging between coding agents through git hubs: tasks and notes, hub/project/person/agent addresses.",
   "author": {

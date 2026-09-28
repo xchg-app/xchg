@@ -981,16 +981,47 @@ cmd_hubs() {
     r=$(hub_remote "$h"); [ -n "$r" ] || r=$(git -C "$(hub_path "$h")" remote get-url origin 2>/dev/null || echo '(local)')
     printf '%-8s %-8s %-30s %-9s %s\n' "$h$([ "$h" = "$CFG_DEFAULT" ] && echo '*')" "$(hub_login "$h")" "$(hub_path "$h")" "${c:-none}" "$(masked "$r")"; done
 }
+# The hub skeleton belongs to the client: hub init lays it down, hub upgrade brings an existing hub
+# to this client's version. README.md carries the contract and, right after it, the client release
+# the text came from (template:), so an older client never rolls the rules back.
+client_release() {  # the release version, also in a developer clone (cmd_version shows a commit there)
+  local m v; for m in .claude-plugin/plugin.json .codex-plugin/plugin.json gemini-extension.json harness/claude-code/.claude-plugin/plugin.json; do
+    v=$(sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p' "$XCHG_ROOT/$m" 2>/dev/null | head -1); [ -n "$v" ] && { echo "$v"; return 0; }; done
+  echo 0
+}
+version_gt() { awk -v a="$1" -v b="$2" 'BEGIN { n = split(a, x, "."); m = split(b, y, "."); if (m > n) n = m
+  for (i = 1; i <= n; i++) { p = x[i] + 0; q = y[i] + 0; if (p != q) exit !(p > q) } exit 1 }'; }
+hub_template() { sed -n '1,/^# /{s/^template: *//p;}' "$(hub_path "$1")/README.md" 2>/dev/null | head -1 || true; }
+lay_skeleton() {  # <hub clone> -> the paths it wrote, one per line
+  local p="$1" v t; v=$(client_release)
+  awk -v v="$v" '{print} /^contract: / && !done {print "template: " v; done = 1}' "$XCHG_ROOT/hub/README.md" > "$p/README.md"
+  printf '* text=auto eol=lf\n' > "$p/.gitattributes"; echo README.md; echo .gitattributes
+  for t in all projects; do [ -d "$p/$t" ] || { mkdir -p "$p/$t"; touch "$p/$t/.gitkeep"; echo "$t/.gitkeep"; }; done
+}
 init_hub_repo() {  # <path> <login>
   local p="$1" login="$2"; mkdir -p "$p"; git -C "$p" init -q
   # the branch name must not depend on the creator's init.defaultBranch:
   # a participant's clone follows HEAD, and "master for one, main for another" breaks connecting
   git -C "$p" symbolic-ref HEAD refs/heads/main
-  cp "$XCHG_ROOT/hub/README.md" "$p/README.md"
+  lay_skeleton "$p" >/dev/null
   { echo "# Contacts"; echo; echo "$CONTACTS_HEADER"; echo "|---|---|---|---|"; } > "$p/contacts.md"
-  mkdir -p "$p/all" "$p/people/$login" "$p/projects"; touch "$p/all/.gitkeep" "$p/people/$login/.gitkeep" "$p/projects/.gitkeep"
-  printf '* text=auto eol=lf\n' > "$p/.gitattributes"
+  mkdir -p "$p/people/$login"; touch "$p/people/$login/.gitkeep"
   git -C "$p" add -A; git -C "$p" commit -q -m "[hub] init (contract $XCHG_CONTRACT)"
+}
+hub_upgrade() {  # <name> <1: may move the hub to this client's contract>
+  local h="$1" bump="$2" d c hv v files; d="$(hub_path "$h")"; v=$(client_release)
+  sync_hubs "$h"; [ -f "$d/README.md" ] || die "hub $h: no README.md in $d, is it a hub clone?"
+  c=$(hub_contract "$h"); c="${c:-0}"
+  [ "$c" -gt "$XCHG_CONTRACT" ] && die "hub $h: contract $c is newer than this client's $XCHG_CONTRACT; the hub is left as it is (update xchg)"
+  [ "$c" -lt "$XCHG_CONTRACT" ] && [ "$bump" = 0 ] &&
+    die "hub $h: contract $c, this client brings $XCHG_CONTRACT; clients of contract $c stop writing to it after the move. When everyone has updated: xchg hub upgrade $h --contract"
+  hv=$(hub_template "$h")
+  if [ -n "$hv" ] && version_gt "$hv" "$v"; then die "hub $h: its rules come from xchg $hv, newer than this $v; the hub is left as it is (update xchg)"; fi
+  files=$(lay_skeleton "$d")
+  if [ -z "$(git -C "$d" status --porcelain -- $files)" ]; then echo "hub $h is up to date (xchg $v, contract $XCHG_CONTRACT)"; return 0; fi
+  git -C "$d" add -- $files
+  hub_push "$h" "[hub] upgrade to $v (contract $XCHG_CONTRACT)" || true
+  echo "hub $h upgraded to xchg $v (contract $c -> $XCHG_CONTRACT)"
 }
 cmd_hub() {
   local sub="${1:-}"; shift || true
@@ -1044,6 +1075,10 @@ cmd_hub() {
       k=$(hub_key "$name"); sc=""; [ -n "$k" ] && sc="$(ssh_cmd "$k") -o BatchMode=yes"
       if GIT_SSH_COMMAND="$sc" git ls-remote "$r" HEAD >/dev/null 2>&1; then echo "hub $name: $(masked "$r") answers${k:+, the key $k is accepted}"
       else die "hub $name: git cannot reach $(masked "$r")${k:+ with the key $k} (give the hub owner the public key${k:+ $k.pub}, or check the address)"; fi;;
+    upgrade) local name="${1:-}" bump=0; shift || true
+      while [ $# -gt 0 ]; do case "$1" in --contract) bump=1; shift;; *) udie "hub upgrade <name> [--contract]";; esac; done
+      [ -n "$name" ] || udie "hub upgrade <name> [--contract]"; require_hubs; is_hub "$name" || die "no hub '$name'"
+      hub_upgrade "$name" "$bump";;
     rm) local name="${1:-}"; [ -n "$name" ] || udie "hub rm <name>"; require_hubs; is_hub "$name" || die "no hub '$name'"
       conf_rm_hub "$name"; [ "$CFG_DEFAULT" = "$name" ] && conf_set_global default ""
       echo "hub $name removed from the registry; the clone at $(hub_path "$name") is left in place";;
@@ -1051,7 +1086,7 @@ cmd_hub() {
       local d="$(hub_path "$name")"; if hub_has_remote "$name"; then git -C "$d" remote set-url origin "$url"; else git -C "$d" remote add origin "$url"; fi
       git -C "$d" push -q -u origin HEAD || die "push to $(masked "$url") failed (the remote is set, retry: git -C $d push -u origin HEAD)"
       conf_set_hub "$name" remote "$url"; echo "hub $name now syncs with $(masked "$url")";;
-    *) udie "hub init <name> [--remote URL] [--ssh-key K] | hub add <name> <remote> [--login L] [--ssh-key K] | hub key <name> <path> | hub check <name> | hub rm <name> | hub remote <name> <url>";;
+    *) udie "hub init <name> [--remote URL] [--ssh-key K] | hub add <name> <remote> [--login L] [--ssh-key K] | hub key <name> <path> | hub check <name> | hub upgrade <name> [--contract] | hub rm <name> | hub remote <name> <url>";;
   esac
 }
 # A key of xchg's own: an agent is usually allowed to run ssh-keygen but not to write into ~/.ssh.
@@ -1220,7 +1255,8 @@ Address: [hub:]part[:part] — all | @project | person | @project:person (part o
   agent                                     my addresses in this session
   projects [--hub H] | projects add <name> [--repo <where the code is>] [--owner login]
   hubs | hub init <name> [--remote URL] | hub add <name> <remote> [--login L] [--ssh-key K]
-       | hub key <name> <path> | hub check <name> | hub rm <name> | hub remote <name> <url>
+       | hub key <name> <path> | hub check <name> | hub upgrade <name> [--contract]
+       | hub rm <name> | hub remote <name> <url>
   key new [--name N]                        an ssh key for the hubs, outside ~/.ssh
   log [n] [--hub H] | sync [--hub H] | status | install | version
 H

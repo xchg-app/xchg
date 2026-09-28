@@ -473,6 +473,42 @@ assert_eq "$RC" 1 "the hub refused the attachment"; assert_contains "$OUT" "the 
 assert_eq "$(find "$SB/w4" -name '*.md' | wc -l)" "$n0" "nothing is sent"
 run "$X" hub rm strict >/dev/null; run "$X" hub rm work2 >/dev/null
 
+t "hub upgrade: the skeleton follows the client"
+git init -q --bare "$SB/bare-up"; run "$X" hub init up --remote "$SB/bare-up" --path "$SB/up" --login alice
+V=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$ROOT/harness/claude-code/.claude-plugin/plugin.json")
+EXP=$(awk -v v="$V" '{print} /^contract: / && !d {print "template: " v; d = 1}' "$ROOT/hub/README.md")
+assert_eq "$(cat "$SB/up/README.md")" "$EXP" "hub init writes the template with the client release"
+# an older skeleton: the rules of another release, no template line, no .gitattributes
+printf -- '---\ncontract: 6\n---\n# Exchange hub\n\nOld rules.\n' > "$SB/up/README.md"; git -C "$SB/up" rm -q .gitattributes
+git -C "$SB/up" commit -qam old; git -C "$SB/up" push -q
+printf -- '---\nfrom: bob/api\nto: all\nkind: message\ndate: 2026-09-09T10:00:00Z\n---\n# Keep me\n' > "$SB/up/all/20260909-100000_bob_keep.md"
+git -C "$SB/up" add -A; git -C "$SB/up" commit -qm msg; git -C "$SB/up" push -q
+n0=$(git -C "$SB/up" rev-list --count HEAD)
+run "$X" hub upgrade up; assert_eq "$RC" 0 "upgrade rc"; assert_contains "$OUT" "upgraded to xchg $V"
+assert_eq "$(cat "$SB/up/README.md")" "$EXP" "the README is the current template"
+[ -f "$SB/up/.gitattributes" ] && ok "the missing .gitattributes is back" || fail ".gitattributes was not restored"
+assert_eq "$(git -C "$SB/up" rev-list --count HEAD)" "$((n0+1))" "one commit"
+assert_eq "$(git -C "$SB/up" log -1 --format=%s)" "[hub] upgrade to $V (contract 6)" "the commit says what it is"
+assert_eq "$(git -C "$SB/bare-up" rev-parse main)" "$(git -C "$SB/up" rev-parse HEAD)" "and it is pushed"
+[ -f "$SB/up/all/20260909-100000_bob_keep.md" ] && ok "messages are not touched" || fail "upgrade removed a message"
+run "$X" hub upgrade up; assert_eq "$RC" 0 "a repeated upgrade"; assert_contains "$OUT" "up to date"
+assert_eq "$(git -C "$SB/up" rev-list --count HEAD)" "$((n0+1))" "makes no commit"
+# refusals leave the hub as it is
+up_set() { sed -i "$1" "$SB/up/README.md"; git -C "$SB/up" commit -qam set; git -C "$SB/up" push -q; git -C "$SB/up" rev-parse HEAD; }
+S=$(up_set 's/^template: .*/template: 99.0.0/')
+run "$X" hub upgrade up; assert_eq "$RC" 1 "rules from a newer client are not rolled back"; assert_contains "$OUT" "newer than this"
+assert_eq "$(git -C "$SB/up" rev-parse HEAD)" "$S" "the hub is unchanged"
+S=$(up_set 's/^contract: 6/contract: 7/')
+run "$X" hub upgrade up --contract; assert_eq "$RC" 1 "a newer contract is refused, even with --contract"; assert_contains "$OUT" "contract 7 is newer"
+assert_eq "$(git -C "$SB/up" rev-parse HEAD)" "$S" "the hub is unchanged"
+S=$(up_set 's/^contract: 7/contract: 5/; s/^template: .*/template: 0.1.0/')
+run "$X" hub upgrade up; assert_eq "$RC" 1 "an older contract needs --contract"; assert_contains "$OUT" "xchg hub upgrade up --contract"
+assert_eq "$(git -C "$SB/up" rev-parse HEAD)" "$S" "the hub is unchanged"
+run "$X" hub upgrade up --contract; assert_eq "$RC" 0 "--contract moves the hub"; assert_contains "$OUT" "contract 5 -> 6"
+assert_eq "$(cat "$SB/up/README.md")" "$EXP" "to the current template"
+run "$X" hub upgrade nosuch; assert_eq "$RC" 1 "an unknown hub"
+run "$X" hub rm up >/dev/null
+
 t "failed push: exit 4, sync delivers"
 mv "$SB/bare-work" "$SB/bare-work.off"
 run in_api "$X" send bob offline <<< '# Sent without network'; assert_eq "$RC" 4 "send to an unreachable hub exits 4"

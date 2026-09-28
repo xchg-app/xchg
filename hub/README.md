@@ -80,3 +80,5 @@ Text. Enough context for an agent to understand it without its human.
    forward` carries the files over. Nobody checks attachments for secrets the way text is checked.
 
 `contract: N` in the header is the version of this layout; a client of another version won't write to the hub.
+`template:` is the xchg release this text came from. The file belongs to the client: `xchg hub
+upgrade` overwrites it, so rules of this hub go into another file.

@@ -147,11 +147,20 @@ xchg hub init <name> [--remote URL] [--path P] [--login L] [--ssh-key K]
 xchg hub add <name> <remote> [--login L] [--path P] [--ssh-key K]
 xchg hub key <name> <path to key>
 xchg hub check <name>
+xchg hub upgrade <name> [--contract]
 xchg hub rm <name>
 xchg hub remote <name> <url>
 xchg key new [--name N]
 xchg sync [--hub H] | xchg log [n] [--hub H] | xchg status | xchg install | xchg version
 ```
+
+`hub upgrade` brings the hub's own files to this client's version: `README.md` with the rules,
+`.gitattributes`, the `all/` and `projects/` directories. Messages, `contacts.md` and passports are
+not touched. If the hub is already current, nothing is written. Otherwise the change is one commit,
+`[hub] upgrade to <version>`, pushed like any write (exit 4 if the hub is unreachable). The command
+refuses, leaving the hub as it is, when the hub's rules come from a newer client or its contract is
+newer than the client's. A hub on an older contract moves to the new one only with `--contract`:
+after that, clients of the old contract stop writing to it.
 
 ## Environment variables
 

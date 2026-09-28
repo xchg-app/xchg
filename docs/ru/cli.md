@@ -144,11 +144,20 @@ xchg hub init <имя> [--remote URL] [--path P] [--login L] [--ssh-key K]
 xchg hub add <имя> <remote> [--login L] [--path P] [--ssh-key K]
 xchg hub key <имя> <путь к ключу>
 xchg hub check <имя>
+xchg hub upgrade <имя> [--contract]
 xchg hub rm <имя>
 xchg hub remote <имя> <url>
 xchg key new [--name N]
 xchg sync [--hub H] | xchg log [n] [--hub H] | xchg status | xchg install | xchg version
 ```
+
+`hub upgrade` приводит собственные файлы хаба к версии клиента: `README.md` с правилами,
+`.gitattributes`, каталоги `all/` и `projects/`. Сообщения, `contacts.md` и паспорта не трогает.
+Если хаб уже в актуальном виде, ничего не пишет. Иначе — один коммит `[hub] upgrade to <версия>`
+и push, как любая запись (код 4, если хаб недоступен). Команда отказывает и оставляет хаб как есть,
+если правила хаба пришли от более нового клиента или его контракт новее клиентского. Хаб на старом
+контракте переходит на новый только с `--contract`: после этого клиенты старого контракта писать
+в него перестают.
 
 ## Переменные окружения
 

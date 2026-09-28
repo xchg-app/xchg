@@ -112,9 +112,12 @@ now".
    the repository.
 7. The mailbox is not polled on a timer — hooks do that.
 
-The reference copy of this text is [`hub/README.md`](../hub/README.md); it is copied into a new hub.
-The number in `contract:` is the layout version: a client of another version refuses to write to
-such a hub.
+The reference copy of this text is [`hub/README.md`](../hub/README.md); it is copied into a new hub,
+and `xchg hub upgrade` brings an existing one to the client's version. The number in `contract:` is
+the layout version: a client of another version refuses to write to such a hub. `template:` is the
+client release the text came from, so an older client doesn't roll the rules back. The hub's
+`README.md` belongs to the client and is overwritten on upgrade: rules of your own hub go into
+another file.
 
 ## Your own hub
 
