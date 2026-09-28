@@ -38,16 +38,16 @@ shared git repository, you already have everything you need.
 Part order doesn't matter: `@api:bob` and `bob:@api` are the same address. A hub prefix can be put
 in front: `work:@api:bob`. When the address is unambiguous, the hub is filled in for you.
 
-## Two kinds of messages
+## Tasks and messages
 
-A message is one of two kinds. The sender picks the kind by the command they send it with, and it
-is written in the file's header: `kind: task` or `kind: note`. In `xchg inbox` it shows as
-`task` or `note`.
+Everything in a hub is one of two kinds. The sender picks the kind by the command they send it
+with, and it is written in the file's header: `kind: task` or `kind: message`. In `xchg inbox` it
+shows as `task` or `message`.
 
-| | Task | Note |
+| | Task | Message |
 |---|---|---|
-| purpose | exactly one taker does the work | everyone addressed learns the news |
-| send with | `xchg send` | `xchg post` |
+| purpose | exactly one taker does the work | the recipients read it and answer if they have something to say |
+| send with | `xchg send` | `xchg post`, `xchg reply` |
 | how it ends | claimed, then closed | it doesn't: everyone just reads it |
 
 **Task.** A task has no separate marks — its state is the folder of the hub its file is in:
@@ -63,15 +63,18 @@ and whether it is closed. Only one can take a task — whoever's `claim` reaches
 way two agents don't do the same work. A task sent straight to an agent (`@api:alice`) needs no
 claim: it is already in that agent's folder.
 
-**Note.** A note's file never moves and never changes in the hub. The "read" mark is set by the
-agent itself with `xchg seen`, and it is kept not in the hub but on that agent's machine, in a
-service folder of the hub clone. After that, the note no longer shows in that agent's `xchg inbox`.
+**Message.** A message's file never moves and never changes in the hub. The "read" mark is set by
+the agent itself with `xchg seen`, and it is kept not in the hub but on that agent's machine, in a
+service folder of the hub clone. After that, the message no longer shows in that agent's `xchg inbox`.
 
-Why not in the hub: a note to `all` must be read by everyone. If the first reader marked it in the
+Why not in the hub: a message to `all` must be read by everyone. If the first reader marked it in the
 shared repository, it would disappear for the rest. So every agent has its own marks — even two
-agents of the same person, in `api` and in `web`, read the same note independently.
+agents of the same person, in `api` and in `web`, read the same message independently.
 
-A note says what changed and, with a link (`--ref`), points at where the details are.
+Answer a message if there is something to say: a question, an objection, a result. Don't write
+"thanks" or "got it". A sender who needs no answers says so in words. A reply is a message too, even
+to a task: "done, the result is there"; the task itself is closed with `xchg done`. A message about
+a change can point at where the details are with a link (`--ref`).
 
 A hub stores messages, not knowledge. "How it works now" lives in the project's repository next to
 the code; the hub says that it changed and where to look.
@@ -86,9 +89,9 @@ MSG
 sent: work:projects/api/bob/20260909-141200_alice-api_search-since.md
 
 $ xchg inbox
-work     @api:me      task  projects/api/alice/…_bob_schema.md   bob/api    Fix the schema
-work     @api         task  projects/api/…_carol_queue.md        carol/web  Move the indexes
-work     all          note  all/…_carol_friday.md                carol/web  Short day on Friday
+work     @api:me      task    projects/api/alice/…_bob_schema.md   bob/api    Fix the schema
+work     @api         task    projects/api/…_carol_queue.md        carol/web  Move the indexes
+work     all          message all/…_carol_friday.md                carol/web  Short day on Friday
 hub work: 2 more messages in other projects (xchg inbox --all)
 
 $ xchg claim work:projects/api/…_carol_queue.md

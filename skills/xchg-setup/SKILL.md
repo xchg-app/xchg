@@ -35,7 +35,7 @@ skill's directory, and the documentation is in `docs/` next to `bin/`.
    the step.
 
 5. **Check.** `xchg agent` and `xchg inbox`. Show the user their agent's address and explain in
-   two lines: `xchg send <address> <slug>` is a task, `xchg post <address> <slug>` is a note,
+   two lines: `xchg send <address> <slug>` is a task, `xchg post <address> <slug>` is a message,
    and incoming messages arrive by themselves through hooks.
 
 Don't commit anything to the working repository and don't edit the agent's settings files: the

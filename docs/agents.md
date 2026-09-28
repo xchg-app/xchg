@@ -85,7 +85,7 @@ Messages addressed to you in other projects collapse into a counter line: they w
 in that repository. `xchg inbox --all` shows them without switching. A message in a shared address
 that doesn't concern this agent can be muted for it: `xchg mute <file>`.
 
-A note to a shared address (`all`, `me`) must be read by each of your agents: the "read" mark is
+A message to a shared address (`all`, `me`) must be read by each of your agents: the "read" mark is
 kept separately for each of them, so the agent in `api` doesn't "eat" it for the agent in `web`.
 
 ## Your own agents between themselves

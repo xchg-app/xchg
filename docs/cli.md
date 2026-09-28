@@ -39,12 +39,12 @@ xchg sent
 
 `inbox` syncs the hubs (in parallel, with a shared 20 s timeout) and shows **this session's**
 addresses: the whole hub, you as a person, your project and your agent. Open tasks are always
-visible, notes until they are read. Messages in your other projects collapse into one counter line;
-`--all` shows them, `--history` adds notes already read and muted messages. `--brief` is the format
+visible, messages until they are read. Messages in your other projects collapse into one counter line;
+`--all` shows them, `--history` adds messages already read and muted messages. `--brief` is the format
 for hooks: at session start it shows everything open, otherwise only what this agent hasn't been
 shown yet, so a repeated hook on the same thing stays silent (0 bytes).
 
-`seen` marks notes as read: without an argument — all addresses of this session, otherwise an
+`seen` marks messages as read: without an argument — all addresses of this session, otherwise an
 address or a single file. Every agent has its own marks, and they are kept not in the hub but
 locally: `.git/xchg-read/` in the hub clone.
 
@@ -74,20 +74,19 @@ it again. Why and how to use this without a human — [autonomous.md](autonomous
 ```bash
 xchg send <address> <slug> [--re file] [--ref where] [--attach file]... < body
 xchg post <address> <slug> [--re file] [--ref where] [--attach file]... < body
-xchg reply <file> <slug> [--note] [--attach file]... < body
+xchg reply <file> <slug> [--task] [--attach file]... < body
 xchg forward <file> <address> [--note '...']
 xchg attach <file>... [--hub H]
 xchg attachments <file>
 xchg get <file | att:hash/name> [--to DIR] [--hub H]
 ```
 
-`send` creates a **task** (`kind: task`), `post` a **note** (`kind: note`). `slug` is a short file
-name from `[A-Za-z0-9._-]`; the body is read from stdin. `--ref` says where the current state lives
-(a repository, a file, a PR); for a note without it the command warns, because a hub stores changes,
-not state.
+`send` creates a **task** (`kind: task`), `post` a **message** (`kind: message`). `slug` is a short
+file name from `[A-Za-z0-9._-]`; the body is read from stdin. `--ref`, optional, says where the
+current state lives (a repository, a file, a PR).
 
 `reply` answers the sender of the original message — the address and `re:` come from the file, so
-you can't pick the wrong hub; by default the reply is a task, `--note` makes it a note.
+you can't pick the wrong hub; the reply is a message, `--task` makes it a task.
 `forward` copies a message to another hub as a new one from you, marked with `forwarded_from`;
 the original is untouched. This is the only way to move a message between hubs.
 
@@ -115,7 +114,7 @@ xchg done <file>
 `claim` moves a task to your agent's address — everyone sees that, and two agents won't do the same
 work twice. Git provides atomicity: whoever pushes first takes it; the one who loses is told who
 was faster, and their local commit is rolled back. `done` closes a task — the file moves to `done/`
-next to its address. Neither command applies to notes.
+next to its address. Neither command applies to messages.
 
 ## People and projects
 

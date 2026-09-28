@@ -20,9 +20,9 @@ a timer (a scheduled loop, cron) would cost a model turn on every tick, so the c
 skill explicitly forbids it. When no human is around, `xchg wait` plays the same role: a process
 polls the hubs, not the model, and the agent wakes only for a real message.
 
-**A task is done once, a note is read by everyone.** This is the only difference between the two
-kinds of messages; delivery, format and storage are shared. That is why a task moves between
-directories (taken → closed), while a note stays put and each reader keeps their own "read" mark, on
+**A task is done once, a message is read by everyone.** This is the only difference between the two
+kinds; delivery, format and storage are shared. That is why a task moves between directories
+(taken → closed), while a message stays put and each reader keeps their own "read" mark, on
 their machine.
 
 **A hub stores messages, not knowledge.** "How it works now" lives in the project's repository,

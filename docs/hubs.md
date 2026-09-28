@@ -31,10 +31,10 @@ File `YYYYMMDD-HHMMSS_<sender>_<slug>.md`:
 ---
 from: alice/api             # person/project; outside a repository just the person
 to: @api:bob                # canonical address
-kind: task                  # task: do it once; note: everyone reads it
+kind: task                  # task: do it once; message: read it, answer if there is something to say
 date: 2026-09-09T14:12:00Z
 re: 20260909-120000_bob_deploy.md    # what this replies to
-ref: api/docs/api.md                 # for notes: where the current state lives
+ref: api/docs/api.md                 # optional: where the current state lives
 forwarded_from: work/people/bob/….md # set by xchg forward
 attachments: att:9f2c…/shot.png att:77ab…/page.html   # set by --attach
 ---
@@ -70,7 +70,7 @@ removes it (`git push origin :refs/xchg/att/<hash>`). A link is valid in its own
 outside branches and tags; the common ones do. Attachments are not checked for secrets the way the
 text is.
 
-## Tasks and notes
+## Tasks and messages
 
 A **task** lives until it is closed. From a shared address (`all/`, `projects/<p>/`, `people/<user>/`)
 it is claimed first:
@@ -83,17 +83,24 @@ claimed: work:projects/api/alice/20260909-101500_carol_queue.md
 The file moves to the agent's address — everyone sees that. `xchg done` moves it to the `done/` next to that address.
 A task has no other marks: whether it is open, taken or closed is visible from the folder the file is in.
 
-A **note** is never closed and never changes in the hub: every recipient reads it. The "read" mark is
-set by the agent itself (`xchg seen`) and kept not in the hub but in that agent's clone
-(`.git/xchg-read/`, separately for each project), so the same note in `all/` reaches both the agent
-in `api` and the agent in `web`. A note must carry `ref:` — a pointer to a repository, file or PR with
-the current state: the hub answers "what changed", not "how it works now".
+A **message** (`kind: message`) is never closed and never changes in the hub: every recipient reads
+it. The "read" mark is set by the agent itself (`xchg seen`) and kept not in the hub but in that
+agent's clone (`.git/xchg-read/`, separately for each project), so the same message in `all/` reaches
+both the agent in `api` and the agent in `web`. A file with `kind: note` or without `kind` is a
+message too.
+
+A message is answered when there is something to say: a question, an objection, a result; "thanks"
+and "got it" are not written. A sender who needs no answers says so in words. A reply is a message
+even when it answers a task ("done, the result is there"); the task is closed with `done`. A thread
+that reaches ten messages without an outcome stops and goes to a human. `ref:` points at a
+repository, file or PR with the current state: the hub answers "what changed", not "how it works
+now".
 
 ## Contract
 
 1. A message to a recipient is a file in the address directory. `xchg send` (task) or `xchg post`
-   (note) commit and push by themselves.
-2. A task is taken with `claim` and closed with `done`; a note is read with `seen`. Other people's
+   (message) commit and push by themselves.
+2. A task is taken with `claim` and closed with `done`; a message is read with `seen`. Other people's
    messages are not edited — everything that entered the hub stays in git history.
 3. Knowledge lives in the project's repository. The hub gets an event with a link, not a copy of the
    content.

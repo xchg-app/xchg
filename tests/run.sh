@@ -246,7 +246,7 @@ M=$(ls "$H/exchange/work/projects/api/bob/"*task1.md)
 assert_eq "$(sed -n 's/^from: //p' "$M")" "alice/api" "from = person/project"
 assert_eq "$(sed -n 's/^to: //p' "$M")" "@api:bob" "to = canonical address"
 assert_eq "$(sed -n 's/^kind: //p' "$M")" "task" "send creates a task"
-assert_eq "$(sed -n 's/^kind: //p' "$(ls "$H/exchange/work/all/"*news.md)")" "note" "post creates a note"
+assert_eq "$(sed -n 's/^kind: //p' "$(ls "$H/exchange/work/all/"*news.md)")" "message" "post creates a message"
 
 t "inbox shows only this session's addresses"
 # messages for alice are put into the hub on behalf of others
@@ -267,16 +267,16 @@ run in_web "$X" inbox; assert_contains "$OUT" "Fix the header"; assert_not_conta
 run in_api "$X" inbox --all; assert_contains "$OUT" "Fix the header"; ok "--all lifts the project filter"
 run in_api "$X" inbox; assert_contains "$OUT" "@api:me"
 assert_eq "$(awk '/Fix the schema/ {print $3}' <<< "$OUT")" task "kind column: task"
-assert_eq "$(awk '/Short day on Friday/ {print $3}' <<< "$OUT")" note "kind column: note"
+assert_eq "$(awk '/Short day on Friday/ {print $3}' <<< "$OUT")" message "kind column: an older note reads as a message"
 
-t "notes are marked read, tasks stay"
+t "messages are marked read, tasks stay"
 run in_api "$X" seen all; assert_contains "$OUT" "read: work:all"
 run in_api "$X" seen @api:me; assert_eq "$RC" 0 "an address from the inbox column (@api:me) is accepted"; assert_contains "$OUT" "read: work:@api:alice"
 run in_api "$X" seen me; assert_eq "$RC" 0 "me is me"; assert_contains "$OUT" "read: work:alice"
-run in_api "$X" inbox; assert_not_contains "$OUT" "Short day on Friday"; ok "a read note is out of the way"
+run in_api "$X" inbox; assert_not_contains "$OUT" "Short day on Friday"; ok "a read message is out of the way"
 run in_api "$X" inbox --history; assert_contains "$OUT" "Short day on Friday"
 assert_contains "$(in_api "$X" inbox)" "A task in the api queue"; ok "the task stays visible"
-run in_web "$X" inbox; assert_contains "$OUT" "Short day on Friday"; ok "read marks are per agent: for web the note is still unread"
+run in_web "$X" inbox; assert_contains "$OUT" "Short day on Friday"; ok "read marks are per agent: for web the message is still unread"
 
 t "claim and done"
 Q=$(ls "$H/exchange/work/projects/api/"*queue.md)
@@ -295,8 +295,8 @@ D=$(ls "$H/exchange/work/projects/api/alice/"*queue.md)
 run in_api "$X" done "$D"; assert_eq "$RC" 0 "done rc"; assert_contains "$OUT" "projects/api/alice/done/"
 run in_api "$X" inbox; assert_not_contains "$OUT" "A task in the api queue"; ok "a closed task leaves the inbox"
 N=$(ls "$H/exchange/work/all/"*friday.md)
-run in_api "$X" done "$N"; assert_eq "$RC" 1 "a note can't be closed"; assert_contains "$OUT" "xchg seen"
-run in_api "$X" claim "$N"; assert_eq "$RC" 1 "a note can't be claimed"
+run in_api "$X" done "$N"; assert_eq "$RC" 1 "a message can't be closed"; assert_contains "$OUT" "xchg seen"
+run in_api "$X" claim "$N"; assert_eq "$RC" 1 "a message can't be claimed"
 
 t "reply and thread"
 P=$(ls "$H/exchange/work/people/alice/"*personal.md)
@@ -304,6 +304,9 @@ run in_api "$X" reply "$P" ok <<< '# Done it'; assert_eq "$RC" 0 "reply rc"
 assert_contains "$OUT" "sent: work:projects/api/bob/"; ok "the reply goes to the sender's agent, not the person"
 R=$(ls -t "$H/exchange/work/projects/api/bob/"*ok.md | head -1)
 assert_contains "$(cat "$R")" "re: $(basename "$P")"
+assert_eq "$(sed -n 's/^kind: //p' "$R")" "message" "a reply is a message, even to a task"
+run in_api "$X" reply "$P" more --task <<< '# One more thing'; R2=$(ls -t "$H/exchange/work/projects/api/bob/"*more.md | head -1)
+assert_eq "$(sed -n 's/^kind: //p' "$R2")" "task" "reply --task makes a task"
 # the status column is compared exactly: broken output contains both words inside the script text
 run in_api "$X" thread "$R"; assert_contains "$OUT" "Personal request"; assert_contains "$OUT" "Done it"
 assert_not_contains "$OUT" "syntax error"; assert_eq "$(awk '/Personal request/ {print $3}' <<< "$OUT")" "open" "status of an open task"
@@ -506,7 +509,7 @@ run "$X" contact rm; assert_eq "$RC" 2 "contact rm without a login"
 run "$X" who аля; assert_contains "$OUT" "work  | alice"
 run "$X" who; assert_contains "$OUT" "projects: api, web"; ok "participation comes from agent directories"
 run in_api "$X" send bob key <<< $'# key\nAKIAABCDEFGHIJKLMNOP'; assert_eq "$RC" 0 "a secret doesn't block"; assert_contains "$OUT" "looks like a secret"
-run in_api "$X" post work:@api nofref <<< '# no link'; assert_contains "$OUT" "without --ref"
+run in_api "$X" post work:@api nofref <<< '# no link'; assert_eq "$RC" 0 "a message without --ref"; assert_not_contains "$OUT" "--ref"
 sed -i 's/^contract: 6/contract: 7/' "$H/exchange/work/README.md"
 run in_api "$X" send bob z <<< '# z'; assert_eq "$RC" 1 "a foreign contract is refused"; assert_contains "$OUT" "contract 7"
 git -C "$H/exchange/work" checkout -q README.md

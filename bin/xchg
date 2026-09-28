@@ -23,7 +23,7 @@ CONF="$CONF_DIR/xchg.conf"
 MAX_AGE="${XCHG_MAX_AGE:-0}"           # seconds; >0 = skip origin if synced recently (hooks)
 BRIEF=0                                # hook mode: report an unreachable hub at most once an hour
 SHOW_ALL=0                             # show other projects too
-SHOW_HISTORY=0                         # show notes already read
+SHOW_HISTORY=0                         # show messages already read
 HOOK_EVENT=""                          # agent hook event (from JSON on stdin)
 HOOK_FORMAT=""                         # how the harness wants hook output: claude|hermes|cline|text
 HOOK_SESSION=0                         # the hook is the session-start one: show everything open
@@ -412,8 +412,10 @@ msg_files() {  # <directory> -> messages of the address (no card, no subdirector
   for f in "$d"/*.md; do [ -e "$f" ] || continue; [ "$(basename "$f")" = README.md ] && continue; echo "$f"; done
   return 0
 }
-kind_of() { local k; k=$(meta kind "$1"); echo "${k:-note}"; }
-# Read marks are per agent: a note to a shared address (all, people/<me>) must be read by every
+# Two kinds: a task is done once and closed; anything else (message, the older note, no kind) is a
+# message: read it, answer if there is something to say.
+kind_of() { case "$(meta kind "$1")" in (task) echo task;; (*) echo message;; esac; }
+# Read marks are per agent: a message to a shared address (all, people/<me>) must be read by every
 # agent of mine, not "whoever reads first closes it for everyone".
 cursor_file() { local key="${2//\//_}" p; p=$(cur_project); echo "$(hub_path "$1")/.git/xchg-read/${p:-shell}--$key"; }
 is_read() { local cf; cf=$(cursor_file "$1" "$2"); [ -f "$cf" ] && grep -qxF "$3" "$cf"; }
@@ -424,7 +426,7 @@ mark_read() {  # <hub> <address> [file|all unread]
     while read -r b; do [ -n "$b" ] && [ -e "$d/$b" ] && echo "$b"; done > "$cf.tmp" || true
   mv "$cf.tmp" "$cf"; return 0
 }
-# Shown: open tasks always, notes until read (read marks are local).
+# Shown: open tasks always, messages until read (read marks are local).
 list_addr() {  # <hub> <address> -> inbox lines
   local h="$1" rel="$2" f b k
   while IFS= read -r f; do [ -n "$f" ] || continue; b=$(basename "$f")
@@ -434,8 +436,8 @@ list_addr() {  # <hub> <address> -> inbox lines
     elif [ "$SHOW_HISTORY" = 1 ]; then :
     elif is_read "$h" "$rel" "$b"; then continue; fi
     local na; na=$(att_links "$f" | grep -c . || true)
-    printf '%-8s %-12s %-5s %-44s %-12s %s%s\n' "$h" "$(addr_label "$h" "$rel")" \
-      "$([ "$k" = task ] && echo task || echo note)" "$rel/$b" "$(meta from "$f")" "$(title "$f")" \
+    printf '%-8s %-12s %-7s %-44s %-12s %s%s\n' "$h" "$(addr_label "$h" "$rel")" \
+      "$k" "$rel/$b" "$(meta from "$f")" "$(title "$f")" \
       "$([ "$na" -gt 0 ] && echo " [+$na $(plural "$na" file files)]")"
   done < <(msg_files "$(hub_path "$h")/$rel")
   return 0
@@ -679,7 +681,7 @@ cmd_mute() {
   for a in "$@"; do
     locate "$a"; d="$(hub_path "$L_HUB")"; [ -f "$d/$L_REL" ] || die "no file $L_HUB:$L_REL"
     set_muted "$L_HUB" on "$(basename "$L_REL")"; mark_shown "$L_HUB" "$(basename "$L_REL")"
-    if [ "$(kind_of "$d/$L_REL")" = note ]; then mark_read "$L_HUB" "$(dirname "$L_REL")" "$L_REL"; fi
+    if [ "$(kind_of "$d/$L_REL")" != task ]; then mark_read "$L_HUB" "$(dirname "$L_REL")" "$L_REL"; fi
     echo "muted for agent @$who: $L_HUB:$L_REL"
   done
 }
@@ -712,7 +714,7 @@ cmd_wait() {
 }
 cmd_read() { require_hubs; [ -n "${1:-}" ] || udie "read <file>"; locate "$1"; sync_hubs "$L_HUB"
   local f="$(hub_path "$L_HUB")/$L_REL"; [ -f "$f" ] || die "no file $L_HUB:$L_REL"; cat "$f"; }
-cmd_seen() {  # mark notes as read: a whole address, one file or all my addresses
+cmd_seen() {  # mark messages as read: a whole address, one file or all my addresses
   require_hubs; local target="${1:-}" h rel n=0
   if [ -z "$target" ]; then
     for h in $(hub_filter); do while IFS= read -r rel; do
@@ -779,17 +781,16 @@ send_common() {  # <kind> <address> <slug> [flags] < body
   local from f; from=$(sender_id "$A_HUB")
   f=$(write_msg "$A_HUB" "$A_REL" "$kind" "$from" "$A_LABEL" "$slug" "$re" "$ref" "" "$body" "$links")
   warn_secrets "$body"
-  [ "$kind" = note ] && [ -z "$ref" ] && warn "without --ref the note doesn't say where the current state lives (repository, file, PR)"
   hub_push "$A_HUB" "[xchg] $from -> $A_LABEL: $slug" || true
   mark_read "$A_HUB" "$A_REL" "$f"; mark_shown "$A_HUB" "$(basename "$f")"
   echo "sent: $A_HUB:$f"
 }
 cmd_send() { require_hubs; [ $# -ge 2 ] || udie "send <address> <slug> [--re file] [--ref where] [--attach file]... < body"; send_common task "$@"; }
-cmd_post() { require_hubs; [ $# -ge 2 ] || udie "post <address> <slug> [--re file] [--ref where] [--attach file]... < body"; send_common note "$@"; }
+cmd_post() { require_hubs; [ $# -ge 2 ] || udie "post <address> <slug> [--re file] [--ref where] [--attach file]... < body"; send_common message "$@"; }
 cmd_reply() {
-  require_hubs; [ $# -ge 2 ] || udie "reply <file> <slug> [--task|--note] [--attach file]..."
-  local src="$1" slug="$2"; shift 2; local kind=task att=() links=""
-  while [ $# -gt 0 ]; do case "$1" in --task) kind=task; shift;; --note) kind=note; shift;;
+  require_hubs; [ $# -ge 2 ] || udie "reply <file> <slug> [--task|--message] [--attach file]..."
+  local src="$1" slug="$2"; shift 2; local kind=message att=() links=""
+  while [ $# -gt 0 ]; do case "$1" in --task) kind=task; shift;; --message|--note) kind=message; shift;;
     --attach) att[${#att[@]}]="$2"; shift 2;; *) udie "reply: unknown flag $1";; esac; done
   [ -t 0 ] && udie "reply: the reply body is expected on stdin"
   local body; body=$(cat)
@@ -810,7 +811,7 @@ cmd_claim() {  # take a task: the file moves to my agent's address
   local h="$L_HUB"; local d="$(hub_path "$h")" rel="$L_REL" b me p dst
   b=$(basename "$rel"); me=$(hub_login "$h")
   [ -f "$d/$rel" ] || { local w; w=$(claim_owner "$h" "$b"); die "the task was already taken by ${w:-someone}"; }
-  [ "$(kind_of "$d/$rel")" = task ] || die "notes are not claimed, they are read: xchg seen $h:$(addr_label "$h" "$(dirname "$rel")")"
+  [ "$(kind_of "$d/$rel")" = task ] || die "messages are not claimed, they are read: xchg seen $h:$(addr_label "$h" "$(dirname "$rel")")"
   case "$rel" in
     projects/*/*/*) die "the task is already with an agent ($(addr_label "$h" "$(dirname "$rel")"))";;
     projects/*) p=$(echo "$rel" | cut -d/ -f2);;
@@ -838,7 +839,7 @@ cmd_done() {  # close a task: the file moves to done/ of its address
   locate "$1"; sync_hubs "$L_HUB"
   local h="$L_HUB"; local d="$(hub_path "$h")" rel="$L_REL" dir
   [ -f "$d/$rel" ] || die "file $h:$rel is gone (closed by someone else?)"
-  [ "$(kind_of "$d/$rel")" = task ] || die "notes are not closed, they are read: xchg seen $h:$(addr_label "$h" "$(dirname "$rel")")"
+  [ "$(kind_of "$d/$rel")" = task ] || die "messages are not closed, they are read: xchg seen $h:$(addr_label "$h" "$(dirname "$rel")")"
   case "$rel" in */done/*) die "the task is already closed";; esac
   check_contract "$h"; dir=$(dirname "$rel"); mkdir -p "$d/$dir/done"
   git -C "$d" mv "$rel" "$dir/done/$(basename "$rel")"
@@ -1201,14 +1202,14 @@ Address: [hub:]part[:part] — all | @project | person | @project:person (part o
   wait [--timeout sec] [--interval sec]     wait for a new message without the model (0 arrived, 3 timeout)
   read <file>                               read a whole message
   send <address> <slug> [--re f] [--ref x] [--attach file]...   task: do it once, it gets closed
-  post <address> <slug> [--re f] [--ref x] [--attach file]...   note: for everyone to read, never closed
-  reply <file> <slug> [--note] [--attach file]...   reply to the sender (a task by default)
+  post <address> <slug> [--re f] [--ref x] [--attach file]...   message: read it, answer if there is something to say
+  reply <file> <slug> [--task] [--attach file]...   reply to the sender (a message; --task for a task)
   attach <file>... [--hub H]                put files into the hub, print links to paste into a message
   attachments <file>                        what a message carries
   get <file | att:hash/name> [--to DIR]     download attachments, print where they are
   claim <file>                              take a task (atomic, through git)
   done <file>                               close a task (moves to done/)
-  seen [address|file]                       mark notes as read
+  seen [address|file]                       mark messages as read
   mute <file>...                            not mine: don't show it or wake this agent
   sent                                      my messages that are still open
   thread <file>                             the conversation by re:, including closed ones
