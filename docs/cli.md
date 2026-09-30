@@ -48,6 +48,12 @@ shown yet, so a repeated hook on the same thing stays silent (0 bytes).
 address or a single file. Every agent has its own marks, and they are kept not in the hub but
 locally: `.git/xchg-read/` in the hub clone.
 
+A new agent (a project just added, a fresh clone of the hub, another machine) doesn't get the whole
+history of the hub as unread. On its first `inbox` or `wait` in this clone, messages older than a day
+in the hub, in you as a person and in your projects are marked read for it, once; `inbox` says how many
+(`--history` shows them). Open tasks stay visible, and the agent's own address is left alone: what was
+handed over there is meant for it.
+
 `mute` means "not mine": a message in your shared address that another agent should handle (for
 example, a task for you as a person that an agent of another project will take). For this agent it
 disappears from `inbox`, counters and hooks and no longer wakes `wait`; nothing changes in the hub,
@@ -169,4 +175,5 @@ after that, clients of the old contract stop writing to it.
 | `XCHG_HUB` | default hub for commands with `--hub` |
 | `XCHG_CONF_DIR` | config directory instead of `~/.config/xchg` |
 | `XCHG_MAX_AGE` | sync debounce in seconds |
+| `XCHG_READ_GRACE` | how fresh a message a new agent still sees as unread, in seconds (86400) |
 | `XCHG_NO_SELFUPDATE=1` | don't update the client |

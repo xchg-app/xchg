@@ -21,6 +21,7 @@ esac
 CONF_DIR="${XCHG_CONF_DIR:-$HOME/.config/xchg}"
 CONF="$CONF_DIR/xchg.conf"
 MAX_AGE="${XCHG_MAX_AGE:-0}"           # seconds; >0 = skip origin if synced recently (hooks)
+READ_GRACE="${XCHG_READ_GRACE:-86400}" # seconds: a new agent still sees messages this fresh as unread
 BRIEF=0                                # hook mode: report an unreachable hub at most once an hour
 SHOW_ALL=0                             # show other projects too
 SHOW_HISTORY=0                         # show messages already read
@@ -426,6 +427,34 @@ mark_read() {  # <hub> <address> [file|all unread]
     while read -r b; do [ -n "$b" ] && [ -e "$d/$b" ] && echo "$b"; done > "$cf.tmp" || true
   mv "$cf.tmp" "$cf"; return 0
 }
+# A new agent (no baseline in this hub clone yet: a new project, a new machine, a fresh clone) doesn't get
+# the whole history of shared addresses as unread: messages older than READ_GRACE are marked read once.
+# Tasks stay open, and the agent's own address is left alone: what was handed over there is for it.
+# The time comes from the name prefix (YYYYmmdd-HHMMSS, UTC), so no file is read to decide.
+baseline_file() { local p; p=$(cur_project); echo "$(hub_path "$1")/.git/xchg-read/${p:-shell}.baseline"; }
+utc_stamp() { date -u -d "@$1" +%Y%m%d-%H%M%S 2>/dev/null || date -u -r "$1" +%Y%m%d-%H%M%S; }
+agent_baseline() {  # <hub> -> how many unread messages were marked read (nothing if the agent isn't new)
+  local h="$1" bf cut me p own rel d f b n=0; bf=$(baseline_file "$h")
+  [ -f "$bf" ] && return 0
+  cut=$(utc_stamp $(( $(now_epoch) - READ_GRACE ))); me=$(hub_login "$h"); p=$(cur_project)
+  own=""; [ -n "$p" ] && own="projects/$p/$me"; d=$(hub_path "$h")
+  while IFS= read -r rel; do [ -n "$rel" ] && [ "$rel" != "$own" ] || continue
+    local old=()
+    while IFS= read -r f; do [ -n "$f" ] || continue; b=$(basename "$f")
+      [[ "$b" < "$cut" ]] || continue; old[${#old[@]}]="$b"
+      [ "$(kind_of "$f")" = task ] || is_read "$h" "$rel" "$b" || is_muted "$h" "$b" || n=$((n+1))
+    done < <(msg_files "$d/$rel")
+    [ ${#old[@]} -gt 0 ] && mark_read_names "$h" "$rel" "${old[@]}"
+  done < <(my_addrs "$h"; other_addrs "$h")
+  mkdir -p "$(dirname "$bf")"; echo "$cut" > "$bf"
+  [ "$n" -gt 0 ] && echo "hub $h: $n earlier $(plural "$n" message messages) marked read for this new agent (xchg inbox --history)"
+  return 0
+}
+mark_read_names() {  # <hub> <address> <file name>...
+  local h="$1" rel="$2" cf; shift 2; cf=$(cursor_file "$h" "$rel"); mkdir -p "$(dirname "$cf")"
+  { if [ -f "$cf" ]; then cat "$cf"; fi; printf '%s\n' "$@"; } | sort -u > "$cf.tmp" && mv "$cf.tmp" "$cf"
+}
+baseline_hubs() { local h; for h in "$@"; do agent_baseline "$h"; done; return 0; }
 # Shown: open tasks always, messages until read (read marks are local).
 list_addr() {  # <hub> <address> -> inbox lines
   local h="$1" rel="$2" f b k
@@ -499,7 +528,7 @@ cmd_inbox() {
     *) udie "inbox [--brief] [--all] [--history] [--max-age N] [--hub H] [--hook-format F] [--session]";; esac; done
   if [ ${#HUBS[@]} -eq 0 ]; then [ "$brief" = 1 ] && return 0; require_hubs; fi
   local hubs; hubs=$(hub_filter); sync_hubs $hubs
-  local out others unsent n mode=new
+  local out others unsent n mode=new base; base=$(baseline_hubs $hubs)
   if [ "$brief" = 1 ]; then
     # Hook: on session start, everything open (a new session doesn't remember the backlog); otherwise only
     # what this agent hasn't been shown yet, or the same lines would enter the context on every prompt.
@@ -517,14 +546,14 @@ cmd_inbox() {
         else echo "xchg: $n new $(plural "$n" message messages) (xchg inbox):"; fi
         echo "$out"
       fi
-      [ -n "$others" ] && echo "$others"; [ -n "$unsent" ] && echo "$unsent"; true)
+      [ -n "$base" ] && echo "$base"; [ -n "$others" ] && echo "$others"; [ -n "$unsent" ] && echo "$unsent"; true)
     hook_print "$text"; return 0
   fi
   out=$(inbox_lines $hubs)
   record_shown "$out"
   others=$(others_note all $hubs); unsent=$(unsent_warn $hubs)
   [ -n "$out" ] && echo "$out" || echo "no new messages"
-  [ -n "$others" ] && echo "$others"; [ -n "$unsent" ] && echo "$unsent"; return 0
+  [ -n "$base" ] && echo "$base"; [ -n "$others" ] && echo "$others"; [ -n "$unsent" ] && echo "$unsent"; return 0
 }
 # --- attachments -------------------------------------------------------------------------------
 # A file travels as a root commit holding only that file, under refs/xchg/att/<blob hash>. A normal
@@ -695,6 +724,7 @@ cmd_wait() {
   require_hubs
   local hubs start line h rel new n pause left; hubs=$(hub_filter); start=$(now_epoch)
   BRIEF=1; MAX_AGE=0; XCHG_NO_SELFUPDATE=1   # don't pull the client repository on every round of waiting
+  sync_hubs $hubs >/dev/null 2>&1 || true; baseline_hubs $hubs >/dev/null
   while :; do
     sync_hubs $hubs >/dev/null 2>&1 || true
     new=$(inbox_lines $hubs | unshown_lines)

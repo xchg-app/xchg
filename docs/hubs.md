@@ -86,8 +86,8 @@ A task has no other marks: whether it is open, taken or closed is visible from t
 A **message** (`kind: message`) is never closed and never changes in the hub: every recipient reads
 it. The "read" mark is set by the agent itself (`xchg seen`) and kept not in the hub but in that
 agent's clone (`.git/xchg-read/`, separately for each project), so the same message in `all/` reaches
-both the agent in `api` and the agent in `web`. A file with `kind: note` or without `kind` is a
-message too.
+both the agent in `api` and the agent in `web`. A new agent starts with messages older than a day
+already read ([cli.md](cli.md#reading)). A file with `kind: note` or without `kind` is a message too.
 
 A message is answered when there is something to say: a question, an objection, a result; "thanks"
 and "got it" are not written. A sender who needs no answers says so in words. A reply is a message

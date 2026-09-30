@@ -16,6 +16,7 @@ assert_contains() { grep -qF -- "$2" <<< "$1" && ok "contains '$2'" || fail "mis
 assert_not_contains() { grep -qF -- "$2" <<< "$1" && fail "must not contain '$2'" "$1" || ok "no '$2'"; }
 assert_eq() { [ "$1" = "$2" ] && ok "$3" || fail "$3: '$1' != '$2'"; }
 run() { set +e; OUT=$("$@" 2>&1); RC=$?; set -e; }
+hook() { local ev="$1"; shift; printf '{"session_id":"t","hook_event_name":"%s"}' "$ev" | "$@"; }
 
 H="$SB/home"; mkdir -p "$H"; export HOME="$H"
 mkdir -p "$SB/repos/api" "$SB/repos/web" "$SB/repos/tool"
@@ -256,6 +257,7 @@ assert_eq "$(sed -n 's/^kind: //p' "$(ls "$H/exchange/work/all/"*news.md)")" "me
 t "inbox shows only this session's addresses"
 # messages for alice are put into the hub on behalf of others
 W2="$SB/w2"; git clone -q "$SB/bare-work" "$W2"
+in_api "$X" inbox >/dev/null; in_web "$X" inbox >/dev/null   # both agents are already known: a new agent has its own test
 mkdir -p "$W2/projects/api/alice" "$W2/projects/web/alice" "$W2/people/alice"
 printf -- '---\nfrom: bob/api\nto: @api:alice\nkind: task\ndate: 2026-09-09T10:00:00Z\n---\n# Fix the schema\n' > "$W2/projects/api/alice/20260909-100000_bob_schema.md"
 printf -- '---\nfrom: carol/web\nto: @web:alice\nkind: task\ndate: 2026-09-09T10:05:00Z\n---\n# Fix the header\n' > "$W2/projects/web/alice/20260909-100500_carol_head.md"
@@ -282,6 +284,28 @@ run in_api "$X" inbox; assert_not_contains "$OUT" "Short day on Friday"; ok "a r
 run in_api "$X" inbox --history; assert_contains "$OUT" "Short day on Friday"
 assert_contains "$(in_api "$X" inbox)" "A task in the api queue"; ok "the task stays visible"
 run in_web "$X" inbox; assert_contains "$OUT" "Short day on Friday"; ok "read marks are per agent: for web the message is still unread"
+
+t "a new agent doesn't get the old history as unread"
+git -C "$W2" pull -q; mkdir -p "$W2/projects/fresh/alice"
+printf -- '---\nfrom: carol/web\nto: @fresh\nkind: message\ndate: 2026-09-01T10:00:00Z\n---\n# Old project news\n' > "$W2/projects/fresh/20260901-100000_carol_oldnews.md"
+printf -- '---\nfrom: carol/web\nto: @fresh:alice\nkind: message\ndate: 2026-09-01T10:05:00Z\n---\n# Handed over to the agent\n' > "$W2/projects/fresh/alice/20260901-100500_carol_handover.md"
+printf -- '---\nfrom: carol/web\nto: @fresh\nkind: task\ndate: 2026-09-01T10:10:00Z\n---\n# Old open task\n' > "$W2/projects/fresh/20260901-101000_carol_oldtask.md"
+( cd "$W2" && git add -A && git commit -qm fresh && git push -q )
+mkdir -p "$SB/repos/fresh"; git init -q "$SB/repos/fresh"; in_fresh() { ( cd "$SB/repos/fresh" && "$@" ); }
+in_fresh "$X" projects add >/dev/null
+printf '# Fresh one\n' | in_web "$X" post @fresh today >/dev/null
+run in_fresh hook SessionStart "$X" inbox --brief; C=$(jq -r .hookSpecificOutput.additionalContext <<< "$OUT")
+assert_not_contains "$C" "Short day on Friday"; assert_not_contains "$C" "Old project news"; ok "old messages of shared addresses are marked read"
+assert_contains "$C" "earlier messages marked read for this new agent (xchg inbox --history)"
+assert_contains "$C" "Fresh one"; ok "a fresh message stays unread"
+assert_contains "$C" "Old open task"; ok "an old task stays open"
+assert_contains "$C" "Handed over to the agent"; ok "the agent's own address is left alone"
+run in_fresh "$X" inbox; assert_not_contains "$OUT" "marked read for this new agent"; ok "only once"
+run in_fresh "$X" inbox --history; assert_contains "$OUT" "Old project news"
+run in_web "$X" inbox; assert_contains "$OUT" "Short day on Friday"; ok "an agent that already exists keeps its unread"
+rm -rf "$H/exchange/work/.git/xchg-read/fresh"* "$H/exchange/work/.git/xchg-shown/fresh"
+run in_fresh env XCHG_READ_GRACE=315360000 "$X" inbox; assert_contains "$OUT" "Old project news"; ok "XCHG_READ_GRACE widens the window"
+git -C "$W2" pull -q; git -C "$W2" rm -rq projects/fresh; ( cd "$W2" && git commit -qm "fresh away" && git push -q ); "$X" sync >/dev/null
 
 t "claim and done"
 Q=$(ls "$H/exchange/work/projects/api/"*queue.md)
@@ -355,7 +379,6 @@ assert_eq "$(cat "$SB/rw.err")" "" "no script fragments in stderr"
 assert_contains "$(cat "$SB/rw.out")" "While the client was rewritten"
 
 t "mute and hooks: someone else's message doesn't wake or repeat"
-hook() { local ev="$1"; shift; printf '{"session_id":"t","hook_event_name":"%s"}' "$ev" | "$@"; }
 git -C "$W2" pull -q
 printf -- '---\nfrom: carol/web\nto: alice\nkind: task\ndate: 2026-09-10T10:00:00Z\n---\n# Not for the api agent\n' > "$W2/people/alice/20260910-100000_carol_notmine.md"
 ( cd "$W2" && git add -A && git commit -qm notmine && git push -q )
