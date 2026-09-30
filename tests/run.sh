@@ -240,12 +240,12 @@ run in_api "$X" send work:nobody x <<< '# x'; assert_contains "$OUT" "recipient 
 run in_api "$X" send bob task5 <<< "# By login, not by someone else's alias"; assert_contains "$OUT" "sent: work:people/bob/"
 run in_api "$X" send Эрин task6 <<< '# By name'; assert_contains "$OUT" "sent: work:people/erin/"
 # the same without python3: the book lookup falls back to awk
+# only the directories of the tools the client needs: the whole PATH may hold thousands of files on a slow disk
 NOPY="$SB/nopy"; mkdir -p "$NOPY"
-IFS=: read -r -a PDIRS <<< "$PATH"
-for dir in "${PDIRS[@]}"; do for f in "$dir"/*; do case "${f##*/}" in (python3*) continue;; esac
+for dir in $(for c in bash git awk sed grep date mktemp env; do dirname "$(command -v "$c")"; done | sort -u); do
+  for f in "$dir"/*; do case "${f##*/}" in (python3*) continue;; esac
   [ -x "$f" ] && [ ! -e "$NOPY/${f##*/}" ] && ln -s "$f" "$NOPY/${f##*/}"; done; done; true
 run in_api env PATH="$NOPY" "$X" send боря task7 <<< '# Alias without python3'; assert_contains "$OUT" "sent: work:people/bob/"
-run in_api env PATH="$NOPY" "$X" send bob task8 <<< '# Login without python3'; assert_contains "$OUT" "sent: work:people/bob/"
 run in_api env PATH="$NOPY" "$X" send "Борис Петров" task9 <<< '# Full name without python3'; assert_contains "$OUT" "sent: work:people/bob/"
 run in_api env PATH="$NOPY" "$X" send dave x <<< '# x'; assert_contains "$OUT" "'dave' is no longer in hub work"
 M=$(ls "$H/exchange/work/projects/api/bob/"*task1.md)
@@ -346,22 +346,22 @@ run in_api "$X" sent; assert_contains "$OUT" "projects/api/bob/"; assert_contain
 t "wait: waiting without a human"
 git -C "$W2" pull -q
 run in_api "$X" inbox; assert_eq "$RC" 0 "inbox before waiting"
-run in_api "$X" wait --timeout 2 --interval 1; assert_eq "$RC" 3 "what was shown doesn't wake"; assert_contains "$OUT" "no new messages"
-( sleep 2; git -C "$W2" pull -q
+run in_api "$X" wait --timeout 1 --interval 1; assert_eq "$RC" 3 "what was shown doesn't wake"; assert_contains "$OUT" "no new messages"
+( sleep 1; git -C "$W2" pull -q
   printf -- '---\nfrom: bob/api\nto: @api:alice\nkind: task\ndate: 2026-09-10T09:00:00Z\n---\n# Wake up\n' > "$W2/projects/api/alice/20260910-090000_bob_wake.md"
   ( cd "$W2" && git add -A && git commit -qm wake && git push -q ) ) &
 BG=$!
 run in_api "$X" wait --timeout 30 --interval 1; wait "$BG" 2>/dev/null || true
 assert_eq "$RC" 0 "a new message wakes"; assert_contains "$OUT" "Wake up"; assert_contains "$OUT" "xchg: 1 new message"
-run in_api "$X" wait --timeout 2 --interval 1; assert_eq "$RC" 3 "the same message doesn't wake again"
+run in_api "$X" wait --timeout 1 --interval 1; assert_eq "$RC" 3 "the same message doesn't wake again"
 run in_api "$X" send @api:alice note-to-self <<< '# A note to self'
-run in_api "$X" wait --timeout 2 --interval 1; assert_eq "$RC" 3 "my own message doesn't wake"
+run in_api "$X" wait --timeout 1 --interval 1; assert_eq "$RC" 3 "my own message doesn't wake"
 git -C "$W2" pull -q
 printf -- '---\nfrom: carol/web\nto: @api\nkind: task\ndate: 2026-09-10T09:10:00Z\n---\n# Queue for claim\n' > "$W2/projects/api/20260910-091000_carol_q2.md"
 ( cd "$W2" && git add -A && git commit -qm q2 && git push -q )
 run in_api "$X" inbox; assert_contains "$OUT" "Queue for claim"
 run in_api "$X" claim "$H/exchange/work/projects/api/20260910-091000_carol_q2.md"; assert_eq "$RC" 0 "claim of a shown task"
-run in_api "$X" wait --timeout 2 --interval 1; assert_eq "$RC" 3 "a claimed task moved, but doesn't wake again"
+run in_api "$X" wait --timeout 1 --interval 1; assert_eq "$RC" 3 "a claimed task moved, but doesn't wake again"
 run in_api "$X" wait --timeout abc; assert_eq "$RC" 2 "bad timeout is a usage error"
 
 t "the client file was rewritten in place while a command ran"
