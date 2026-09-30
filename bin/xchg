@@ -184,10 +184,12 @@ sync_hubs() {  # parallel pull, shared 20 s deadline
   [ $# -gt 0 ] || return 0
   local tmp h pids=() i=0; tmp=$(mktemp -d)
   for h in "$@"; do ( hub_sync "$h" > "$tmp/$i" 2>&1 || true ) & pids+=($!); i=$((i+1)); done
-  local deadline=$(( $(now_epoch) + 20 )) alive p
+  # a local or near hub answers in a fraction of a second: poll often at first, then back off
+  local deadline=$(( $(now_epoch) + 20 )) alive p n=0
   while :; do alive=0; for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null && alive=1; done
     [ "$alive" = 0 ] && break
-    [ "$(now_epoch)" -ge "$deadline" ] && { kill "${pids[@]}" 2>/dev/null || true; break; }; sleep 0.2; done
+    [ "$(now_epoch)" -ge "$deadline" ] && { kill "${pids[@]}" 2>/dev/null || true; break; }
+    n=$((n+1)); if [ "$n" -le 25 ]; then sleep 0.02; else sleep 0.2; fi; done
   wait 2>/dev/null || true
   i=0; for h in "$@"; do [ -s "$tmp/$i" ] && cat "$tmp/$i"; i=$((i+1)); done; rm -rf "$tmp"
   self_update
