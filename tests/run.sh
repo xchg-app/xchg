@@ -129,6 +129,7 @@ for p in "claude-code .claude-plugin/plugin.json UserPromptSubmit" "codex .codex
     assert_contains "$c" "R/bin/xchg"
   done
   assert_contains "$(cat "$PKG/$name/README.md")" "generated"
+  assert_eq "$(cat "$PKG/$name/.gitattributes" 2>/dev/null)" "* text=auto eol=lf" "$name: the package pins LF line endings"
 done
 assert_eq "$(jq -r .hooks.SessionStart[0].hooks[0].timeout "$PKG/gemini/hooks/hooks.json")" 30000 "gemini counts the timeout in milliseconds"
 assert_eq "$(jq -r '.plugins[0].source' "$PKG/claude-code/.claude-plugin/marketplace.json")" "./" "claude-code: the marketplace points at the package root"
@@ -147,6 +148,10 @@ BARE="$SB/gemini-plugin.git"; git init -q --bare "$BARE"
 run env XCHG_PACKAGE_REPO="$BARE" "$ROOT/tools/publish.sh" gemini "$VER"; assert_eq "$RC" 0 "the package is published"
 run git -C "$BARE" show "v$VER:gemini-extension.json"; assert_contains "$OUT" "\"version\": \"$VER\"" "the tag v$VER carries the package"
 run git -C "$BARE" show "v$VER:bin/xchg"; assert_contains "$OUT" "xchg"
+# a clone on a machine with core.autocrlf=true (how Windows git is set up) still gets a working client
+run git -c core.autocrlf=true clone -q "$BARE" "$SB/crlf-clone"
+grep -q "$(printf '\r')" "$SB/crlf-clone/bin/xchg" && fail "the client arrived with CRLF under autocrlf=true" || ok "the client arrives with LF under autocrlf=true"
+run env HOME="$SB/crlf-home" "$SB/crlf-clone/bin/xchg" version; assert_eq "$RC" 0 "the client from an autocrlf clone runs"
 run env XCHG_PACKAGE_REPO="$BARE" "$ROOT/tools/publish.sh" gemini "$VER"; assert_contains "$OUT" "already published"
 run env XCHG_PACKAGE_REPO="$BARE" "$ROOT/tools/publish.sh" gemini 9.9.9; assert_eq "$RC" 1 "a version other than the one in the manifests is refused"
 run env XCHG_PACKAGE_REPO="https://user:SECRET@example.invalid/x.git" "$ROOT/tools/publish.sh" gemini "$VER"

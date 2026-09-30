@@ -35,6 +35,9 @@ rm -rf "$out"; mkdir -p "$out"
 (cd "$src" && find . -mindepth 1 -maxdepth 1 -exec cp -R {} "$out/" \;)
 # the shared part, dereferenced: a package must stand on its own
 for shared in bin skills hub LICENSE; do cp -RL "$ROOT/$shared" "$out/$shared"; done
+# the package is installed by a plain git clone: with core.autocrlf=true the client would arrive
+# with CRLF and fail on "bash\r", so the package repository pins LF itself
+printf '* text=auto eol=lf\n' > "$out/.gitattributes"
 
 version=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$out/$manifest" | head -1)
 [ -n "$version" ] || { echo "no version in $manifest" >&2; exit 1; }

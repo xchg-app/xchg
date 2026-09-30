@@ -35,8 +35,14 @@ what is new, and when there is nothing new it prints nothing, so no context and 
 After installing, restart the session so the package loads, then run the setup command from the
 table with a hub URL, or ask the agent to set up xchg.
 
+A package repository pins LF line endings in its `.gitattributes`, so the client works after a
+plain `git clone` even where git is set to `core.autocrlf=true`, as on Windows.
+
 The config `~/.config/xchg/xchg.conf` and the hub clones don't belong to any package: they stay when
 a package is removed, and all harnesses on one machine share them.
+
+A package repository carries its own `.gitattributes` with LF line endings, so the client works
+after a clone on a machine with `core.autocrlf=true`.
 
 ### Claude Code
 
