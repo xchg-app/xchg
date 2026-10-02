@@ -88,6 +88,15 @@ that doesn't concern this agent can be muted for it: `xchg mute <file>`.
 A message to a shared address (`all`, `me`) must be read by each of your agents: the "read" mark is
 kept separately for each of them, so the agent in `api` doesn't "eat" it for the agent in `web`.
 
+The exception is a reply (`re:`) that came to you as a person: it goes to the agent that has seen the
+original message (sent it, or got it in its inbox). For your other agents such a reply lands in the counter
+of other projects, and `xchg inbox --all` shows it. If no agent on this machine has seen the original, the
+reply is shown to each of them.
+
+A reply comes to you as a person when the original was sent from a repository that is not a project in
+that hub: its signature carries no project then. The client warns about it on sending; `xchg projects add`
+makes the agent addressable, and replies go straight to it.
+
 ## Your own agents between themselves
 
 Create a hub without a remote — it lives locally and is visible to no one but you:

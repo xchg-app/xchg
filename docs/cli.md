@@ -39,7 +39,7 @@ xchg sent
 
 `inbox` syncs the hubs (in parallel, with a shared 20 s timeout) and shows **this session's**
 addresses: the whole hub, you as a person, your project and your agent. Open tasks are always
-visible, messages until they are read. Messages in your other projects collapse into one counter line;
+visible, messages until they are read. Messages in your other projects, and replies to what your other agents sent, collapse into one counter line;
 `--all` shows them, `--history` adds messages already read and muted messages. `--brief` is the format
 for hooks: at session start it shows everything open, otherwise only what this agent hasn't been
 shown yet, so a repeated hook on the same thing stays silent (0 bytes).
@@ -93,6 +93,9 @@ current state lives (a repository, a file, a PR).
 
 `reply` answers the sender of the original message — the address and `re:` come from the file, so
 you can't pick the wrong hub; the reply is a message, `--task` makes it a task.
+A message from a repository that is not a project in the hub is signed with the person alone, and the
+reply to it will come to you as a person, not to this agent: the client warns about it on stderr and
+suggests `xchg projects add`.
 `forward` copies a message to another hub as a new one from you, marked with `forwarded_from`;
 the original is untouched. This is the only way to move a message between hubs.
 

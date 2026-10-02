@@ -458,14 +458,31 @@ mark_read_names() {  # <hub> <address> <file name>...
 }
 baseline_hubs() { local h; for h in "$@"; do agent_baseline "$h"; done; return 0; }
 # Shown: open tasks always, messages until read (read marks are local).
-list_addr() {  # <hub> <address> -> inbox lines
-  local h="$1" rel="$2" f b k
+# A reply in my personal address is for the agent that has seen the message it answers (it sent that
+# message, or was shown it). For my other agents it counts as a message in another project. When no agent
+# in this clone has seen the original (it was sent from another machine), every agent shows the reply.
+foreign_reply() {  # <hub> <file>: a reply to a message another agent of mine has seen and this one hasn't
+  local re mine f; re=$(meta re "$2"); [ -n "$re" ] || return 1
+  is_shown "$1" "$re" && return 1
+  mine=$(shown_file "$1")
+  for f in "$(dirname "$mine")"/*; do
+    if [ -f "$f" ] && [ "$f" != "$mine" ] && grep -qxF "$re" "$f"; then return 0; fi
+  done
+  return 1
+}
+list_addr() {  # <hub> <address> [mine|foreign] -> inbox lines; in my personal address: without / only others' replies
+  local h="$1" rel="$2" scope="${3:-}" f b k
+  [ "$rel" = "people/$(hub_login "$h")" ] || scope=""
   while IFS= read -r f; do [ -n "$f" ] || continue; b=$(basename "$f")
     if [ "$SHOW_HISTORY" != 1 ] && is_muted "$h" "$b"; then continue; fi
     k=$(kind_of "$f")
     if [ "$k" = task ]; then :
     elif [ "$SHOW_HISTORY" = 1 ]; then :
     elif is_read "$h" "$rel" "$b"; then continue; fi
+    case "$scope" in
+      mine)    if foreign_reply "$h" "$f"; then continue; fi;;
+      foreign) foreign_reply "$h" "$f" || continue;;
+    esac
     local na; na=$(att_links "$f" | grep -c . || true)
     printf '%-8s %-12s %-7s %-44s %-12s %s%s\n' "$h" "$(addr_label "$h" "$rel")" \
       "$k" "$rel/$b" "$(meta from "$f")" "$(title "$f")" \
@@ -487,6 +504,13 @@ write_msg() {  # <hub> <address> <kind> <from> <to> <slug> <re> <ref> <forwarded
 }
 warn_secrets() { grep -qE 'AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|gh[ous]_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY|xox[baprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9]{20,}' <<< "$1" \
   && warn "WARNING: the body looks like a secret (token/key). Sent anyway: check it and revoke the key if needed." || true; }
+# A message from a repository that is not a project in the hub is signed with the person alone, so the
+# reply comes to the personal address instead of this agent's.
+warn_no_project() {  # <hub>
+  local p; p=$(cur_project); [ -n "$p" ] || return 0
+  has_project "$1" "$p" && return 0
+  warn "sent as $(hub_login "$1"), without a project: repository '$p' is not a project in hub $1, so the reply will come to your personal address, not to this agent. Add it: xchg projects add --hub $1"
+}
 
 L_HUB="" L_REL=""   # the located file: hub and path inside the hub
 locate() {
@@ -513,7 +537,8 @@ others_note() {  # <all|new> <hub...> -> count of messages in my other projects 
   [ "$SHOW_ALL" = 1 ] && return 0
   local mode="$1" h rel lines n; shift
   for h in "$@"; do
-    lines=$(while IFS= read -r rel; do [ -n "$rel" ] && list_addr "$h" "$rel"; done < <(other_addrs "$h"); true)
+    lines=$(list_addr "$h" "people/$(hub_login "$h")" foreign
+      while IFS= read -r rel; do [ -n "$rel" ] && list_addr "$h" "$rel"; done < <(other_addrs "$h"); true)
     [ "$mode" = new ] && lines=$(printf '%s\n' "$lines" | unshown_lines)
     n=$(printf '%s' "$lines" | grep -c . || true)
     [ "$n" -gt 0 ] || continue
@@ -638,9 +663,9 @@ cmd_get() {  # download the attachments of a message, or one link, and print whe
   esac
 }
 inbox_lines() {  # <hub...> -> inbox lines for this session's addresses (with --all, other projects too)
-  local h rel
+  local h rel scope=mine; [ "$SHOW_ALL" = 1 ] && scope=""
   for h in "$@"; do
-    while IFS= read -r rel; do list_addr "$h" "$rel"; done < <(my_addrs "$h")
+    while IFS= read -r rel; do list_addr "$h" "$rel" "$scope"; done < <(my_addrs "$h")
     if [ "$SHOW_ALL" = 1 ]; then while IFS= read -r rel; do list_addr "$h" "$rel"; done < <(other_addrs "$h"); fi
   done; return 0
 }
@@ -812,7 +837,7 @@ send_common() {  # <kind> <address> <slug> [flags] < body
   [ ${#att[@]} -eq 0 ] || links=$(upload_all "$A_HUB" "${att[@]}") || exit 1
   local from f; from=$(sender_id "$A_HUB")
   f=$(write_msg "$A_HUB" "$A_REL" "$kind" "$from" "$A_LABEL" "$slug" "$re" "$ref" "" "$body" "$links")
-  warn_secrets "$body"
+  warn_secrets "$body"; warn_no_project "$A_HUB"
   hub_push "$A_HUB" "[xchg] $from -> $A_LABEL: $slug" || true
   mark_read "$A_HUB" "$A_REL" "$f"; mark_shown "$A_HUB" "$(basename "$f")"
   echo "sent: $A_HUB:$f"
@@ -834,7 +859,7 @@ cmd_reply() {
   [ ${#att[@]} -eq 0 ] || links=$(upload_all "$A_HUB" "${att[@]}") || exit 1
   local me nf; me=$(sender_id "$A_HUB")
   nf=$(write_msg "$A_HUB" "$A_REL" "$kind" "$me" "$A_LABEL" "$slug" "$(basename "$L_REL")" "" "" "$body" "$links")
-  warn_secrets "$body"
+  warn_secrets "$body"; warn_no_project "$A_HUB"
   mark_shown "$A_HUB" "$(basename "$nf")"; hub_push "$A_HUB" "[xchg] $me -> $A_LABEL: $slug (reply)" || true; echo "sent: $A_HUB:$nf"
 }
 cmd_claim() {  # take a task: the file moves to my agent's address

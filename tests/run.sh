@@ -426,6 +426,25 @@ run in_api "$X" mute "$LT"; assert_eq "$RC" 0 "mute a queued task"
 run in_api "$X" claim "$LT"; assert_eq "$RC" 0 "claim a muted task"
 run in_api "$X" inbox; assert_contains "$OUT" "Mute first, claim later"; ok "a task taken for myself is visible again"
 
+t "a reply in the personal address goes to the agent that has seen the original"
+in_tool() { ( cd "$SB/repos/tool" && "$X" "$@" ); }
+run in_tool post bob ask <<< '# A question from tool'; assert_eq "$RC" 0 "a message from a repository that is not a project"
+assert_contains "$OUT" "without a project"; assert_contains "$OUT" "xchg projects add --hub work"
+ASK=$(basename "$(ls "$H/exchange/work/people/bob/"*ask.md)")
+assert_eq "$(sed -n 's/^from: //p' "$H/exchange/work/people/bob/$ASK")" "alice" "it is signed with the person alone"
+run in_api "$X" post bob fine <<< '# From a project'; assert_not_contains "$OUT" "without a project"
+run bash -c "cd / && '$X' post bob out <<< '# Outside a repository'"; assert_not_contains "$OUT" "without a project"; ok "no agent, nothing to warn about"
+git -C "$W2" pull -q; NOW=$(date -u +%Y%m%d-%H%M%S)
+printf -- '---\nfrom: bob/api\nto: alice\nkind: message\ndate: 2026-09-10T11:00:00Z\nre: %s\n---\n# Answer for tool\n' "$ASK" > "$W2/people/alice/${NOW}_bob-api_answer.md"
+printf -- '---\nfrom: bob/api\nto: alice\nkind: message\ndate: 2026-09-10T11:00:00Z\nre: 20260101-000000_alice_elsewhere.md\n---\n# Answer to another machine\n' > "$W2/people/alice/${NOW}_bob-api_unknown.md"
+( cd "$W2" && git add -A && git commit -qm answers && git push -q )
+run in_api "$X" inbox; assert_not_contains "$OUT" "Answer for tool"; ok "another agent's reply is not in this agent's inbox"
+assert_contains "$OUT" "in other projects (xchg inbox --all)"; assert_contains "$OUT" "Answer to another machine"
+ok "a reply nobody here has seen the original of is shown to every agent"
+run in_api "$X" wait --timeout 1; assert_eq "$RC" 3 "and it doesn't wake this agent"
+run in_api "$X" inbox --all; assert_contains "$OUT" "Answer for tool"; ok "--all shows it"
+run in_tool inbox; assert_contains "$OUT" "Answer for tool"; ok "the agent that sent the original gets the reply"
+
 t "second hub: my own agents between themselves"
 run "$X" hub init me --login alice; assert_eq "$RC" 0 "personal hub"
 run in_api "$X" seen me; assert_eq "$RC" 1 "me in two hubs is ambiguous"; assert_contains "$OUT" "exists in hubs: work me"
