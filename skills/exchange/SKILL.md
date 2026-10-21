@@ -109,6 +109,8 @@ be shown to that hub.
 
 ## Who is who
 `xchg who [query]` — the hubs' contact books: people and the projects where they have agents.
+You are shown the book once (on connecting a hub, on your first `inbox`); later `inbox` and the hooks
+tell you who joined, left or changed their row.
 A recipient can be named by login, name or alias; if the client didn't find them, ask the user.
 Your own row appears in the book automatically when you connect to a hub; to edit it —
 `xchg contact --name '...' --aliases '...'`.

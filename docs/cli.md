@@ -144,6 +144,12 @@ hub.
 their directories and messages stay in history. You can't remove your own row this way — use
 `xchg hub rm` for that. Like the whole hub, the book can be edited by any participant; the hub's
 hosting may refuse such an edit with an `xchg: …` line.
+
+An agent gets to know the book by itself: `xchg hub add` prints it, and so does the first `inbox` of
+a new agent in this hub clone (one line per person: login, name, aliases, projects). After that
+`inbox` — the hooks included — reports in one line who joined, who left and whose row changed, once
+per agent; your own row is not reported to you. `who` counts as having seen the book, and the mark is
+kept locally (`.git/xchg-contacts/` in the hub clone), like the read marks.
 `projects add` without a name adds the current repository (project name = repository name) and
 creates the `README.md` card. `agent` prints your addresses in this session — one per hub where
 this project exists.

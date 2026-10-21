@@ -300,7 +300,9 @@ assert_contains "$C" "earlier messages marked read for this new agent (xchg inbo
 assert_contains "$C" "Fresh one"; ok "a fresh message stays unread"
 assert_contains "$C" "Old open task"; ok "an old task stays open"
 assert_contains "$C" "Handed over to the agent"; ok "the agent's own address is left alone"
-run in_fresh "$X" inbox; assert_not_contains "$OUT" "marked read for this new agent"; ok "only once"
+assert_contains "$C" "hub work: the contact book (xchg who):"; assert_contains "$C" "  alice (you)"
+assert_contains "$C" "  bob  Борис Петров  aliases: боря"; ok "a new agent is introduced to the contact book"
+run in_fresh "$X" inbox; assert_not_contains "$OUT" "marked read for this new agent"; assert_not_contains "$OUT" "the contact book"; ok "only once"
 run in_fresh "$X" inbox --history; assert_contains "$OUT" "Old project news"
 run in_web "$X" inbox; assert_contains "$OUT" "Short day on Friday"; ok "an agent that already exists keeps its unread"
 rm -rf "$H/exchange/work/.git/xchg-read/fresh"* "$H/exchange/work/.git/xchg-shown/fresh"
@@ -484,6 +486,7 @@ git -C "$W2" cat-file -e "$HP" 2>/dev/null && fail "a normal pull brought the fi
 run in_api "$X" inbox; assert_contains "$OUT" "Two files [+2 files]"
 # file:// and not a bare path: a clone from a plain path copies the whole object store, like no server does
 run "$X" hub add work2 "file://$SB/bare-work" --path "$SB/w3" --login alice; assert_eq "$RC" 0 "a second clone of the same hub"
+assert_contains "$OUT" "hub work2: the contact book (xchg who):"; assert_contains "$OUT" "  carol  Кэрол"; ok "connecting a hub introduces its contact book"
 M2="work2:${M#$H/exchange/work/}"
 run "$X" attachments "$M2"; assert_contains "$OUT" "not downloaded"
 run "$X" get "$M2"; assert_eq "$RC" 0 "get fetches the files from the hub"
@@ -591,6 +594,21 @@ run "$X" contact rm alice; assert_eq "$RC" 1 "rm doesn't remove your own row"; a
 run "$X" contact rm; assert_eq "$RC" 2 "contact rm without a login"
 run "$X" who аля; assert_contains "$OUT" "work  | alice"
 run "$X" who; assert_contains "$OUT" "projects: api, web"; ok "participation comes from agent directories"
+t "changes of the contact book reach every agent once"
+run in_api hook UserPromptSubmit "$X" inbox --brief; C=$(jq -r .hookSpecificOutput.additionalContext <<< "$OUT")
+assert_contains "$C" "hub work: contacts left: erin (Эрин) (xchg who)"; assert_not_contains "$C" "changed: alice"; ok "someone left; my own edited row is not news"
+run in_api hook UserPromptSubmit "$X" inbox --brief; assert_eq "$OUT" "" "told once (0 bytes)"
+run in_web "$X" inbox; assert_contains "$OUT" "hub work: contacts left: erin (Эрин) (xchg who)"; ok "the agent in web is told separately"
+git -C "$W2" pull -q
+printf '| frank | Фрэнк | | frank@example.com |\n' >> "$W2/contacts.md"
+sed -i 's/^| bob | Борис Петров | боря |/| bob | Boris | боря, bobby |/' "$W2/contacts.md"
+( cd "$W2" && git add -A && git commit -qm contacts && git push -q )
+run in_api hook UserPromptSubmit "$X" inbox --brief; C=$(jq -r .hookSpecificOutput.additionalContext <<< "$OUT")
+assert_contains "$C" "hub work: contacts joined: frank (Фрэнк); changed: bob (Boris) (xchg who)"; ok "joined and changed in one line"
+git -C "$W2" pull -q; printf '| grace | | | |\n' >> "$W2/contacts.md"; ( cd "$W2" && git add -A && git commit -qm contacts && git push -q )
+run in_web "$X" who >/dev/null; run in_web "$X" inbox; assert_not_contains "$OUT" "grace"; ok "who shows the book: nothing left to tell"
+run in_api "$X" inbox; assert_contains "$OUT" "hub work: contacts joined: grace (xchg who)"; ok "a person without a name is named by login"
+run "$X" contact rm frank >/dev/null; run "$X" contact rm grace >/dev/null; run in_api "$X" inbox >/dev/null; run in_web "$X" inbox >/dev/null
 run in_api "$X" send bob key <<< $'# key\nAKIAABCDEFGHIJKLMNOP'; assert_eq "$RC" 0 "a secret doesn't block"; assert_contains "$OUT" "looks like a secret"
 run in_api "$X" post work:@api nofref <<< '# no link'; assert_eq "$RC" 0 "a message without --ref"; assert_not_contains "$OUT" "--ref"
 sed -i 's/^contract: 6/contract: 7/' "$H/exchange/work/README.md"

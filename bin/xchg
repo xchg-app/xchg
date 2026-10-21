@@ -171,8 +171,7 @@ hub_sync() {  # <hub>; stdout: notices for the agent
     fi
     local after; after=$(git -C "$d" rev-parse HEAD)
     if [ "$before" != none ] && [ "$before" != "$after" ]; then
-      local ch; ch=$(git -C "$d" diff --name-only "$before" "$after" -- README.md contacts.md | tr '\n' ' ')
-      [ -n "$ch" ] && echo "hub $h: contract/contacts updated ($ch)"
+      git -C "$d" diff --quiet "$before" "$after" -- README.md || echo "hub $h: contract updated (README.md)"
     fi
   else
     local u="$d/.git/xchg-unavail" last=0; [ -f "$u" ] && last=$(cat "$u")
@@ -457,6 +456,41 @@ mark_read_names() {  # <hub> <address> <file name>...
   { if [ -f "$cf" ]; then cat "$cf"; fi; printf '%s\n' "$@"; } | sort -u > "$cf.tmp" && mv "$cf.tmp" "$cf"
 }
 baseline_hubs() { local h; for h in "$@"; do agent_baseline "$h"; done; return 0; }
+# The contact book as this agent knows it: the whole book once (connecting a hub, the agent's first
+# inbox in this clone), after that who joined, left or changed their row. The snapshot is per agent,
+# like the read marks, so every agent of mine is told once. My own row is not news to me.
+contacts_file() { local p; p=$(cur_project); echo "$(hub_path "$1")/.git/xchg-contacts/${p:-shell}"; }
+contacts_rows() {  # <hub> -> "login<TAB>name<TAB>aliases<TAB>contact", one per person
+  local c="$(hub_path "$1")/contacts.md"; [ -f "$c" ] || return 0
+  awk -F'|' '/^\|/ { for (i=2;i<=5;i++) gsub(/^ +| +$/,"",$i); if ($2=="login"||$2==""||$2~/^-/) next; print $2 "\t" $3 "\t" $4 "\t" $5 }' "$c" | LC_ALL=C sort
+}
+contacts_note() {  # <hub> [silent] -> the book for an agent that hasn't seen it, otherwise who joined, left or changed
+  local h="$1" f cur me login name aliases contact ps; f=$(contacts_file "$h"); cur=$(contacts_rows "$h"); me=$(hub_login "$h")
+  mkdir -p "$(dirname "$f")"
+  if [ ! -f "$f" ]; then
+    printf '%s\n' "$cur" > "$f.tmp" && mv "$f.tmp" "$f"
+    [ -n "$cur" ] && [ "${2:-}" != silent ] || return 0
+    echo "hub $h: the contact book (xchg who):"
+    while IFS=$'\t' read -r login name aliases contact; do [ -n "$login" ] || continue
+      ps=$(user_projects "$h" "$login" | paste -sd, - | sed 's/,/, /g')
+      printf '  %s%s%s%s%s\n' "$login" "$([ "$login" = "$me" ] && echo ' (you)')" "${name:+  $name}" "${aliases:+  aliases: $aliases}" "${ps:+  projects: $ps}"
+    done <<< "$cur"
+    return 0
+  fi
+  [ "$cur" = "$(cat "$f")" ] && return 0
+  local diff; diff=$(printf '%s\n' "$cur" | awk -F'\t' -v me="$me" '
+    function who(r,  f) { split(r, f, "\t"); return (f[2] == "" ? f[1] : f[1] " (" f[2] ")") }
+    function add(s, r) { return (s == "" ? "" : s ", ") who(r) }
+    NR==FNR { old[$1]=$0; next }
+    $1 == me { seen[$1]=1; next }
+    { seen[$1]=1; if (!($1 in old)) j=add(j, $0); else if (old[$1] != $0) c=add(c, $0) }
+    END { for (l in old) if (!(l in seen) && l != me) left=add(left, old[l])
+      if (j != "") out="joined: " j; if (left != "") out=out (out==""?"":"; ") "left: " left
+      if (c != "") out=out (out==""?"":"; ") "changed: " c; print out }' "$f" -)
+  printf '%s\n' "$cur" > "$f.tmp" && mv "$f.tmp" "$f"
+  [ -n "$diff" ] && [ "${2:-}" != silent ] && echo "hub $h: contacts $diff (xchg who)"; return 0
+}
+contacts_notes() { local h; for h in "$@"; do contacts_note "$h"; done; return 0; }
 # Shown: open tasks always, messages until read (read marks are local).
 # A reply in my personal address is for the agent that has seen the message it answers (it sent that
 # message, or was shown it). For my other agents it counts as a message in another project. When no agent
@@ -555,7 +589,7 @@ cmd_inbox() {
     *) udie "inbox [--brief] [--all] [--history] [--max-age N] [--hub H] [--hook-format F] [--session]";; esac; done
   if [ ${#HUBS[@]} -eq 0 ]; then [ "$brief" = 1 ] && return 0; require_hubs; fi
   local hubs; hubs=$(hub_filter); sync_hubs $hubs
-  local out others unsent n mode=new base; base=$(baseline_hubs $hubs)
+  local out others unsent n mode=new base book; base=$(baseline_hubs $hubs); book=$(contacts_notes $hubs)
   if [ "$brief" = 1 ]; then
     # Hook: on session start, everything open (a new session doesn't remember the backlog); otherwise only
     # what this agent hasn't been shown yet, or the same lines would enter the context on every prompt.
@@ -573,14 +607,14 @@ cmd_inbox() {
         else echo "xchg: $n new $(plural "$n" message messages) (xchg inbox):"; fi
         echo "$out"
       fi
-      [ -n "$base" ] && echo "$base"; [ -n "$others" ] && echo "$others"; [ -n "$unsent" ] && echo "$unsent"; true)
+      [ -n "$base" ] && echo "$base"; [ -n "$book" ] && echo "$book"; [ -n "$others" ] && echo "$others"; [ -n "$unsent" ] && echo "$unsent"; true)
     hook_print "$text"; return 0
   fi
   out=$(inbox_lines $hubs)
   record_shown "$out"
   others=$(others_note all $hubs); unsent=$(unsent_warn $hubs)
   [ -n "$out" ] && echo "$out" || echo "no new messages"
-  [ -n "$base" ] && echo "$base"; [ -n "$others" ] && echo "$others"; [ -n "$unsent" ] && echo "$unsent"; return 0
+  [ -n "$base" ] && echo "$base"; [ -n "$book" ] && echo "$book"; [ -n "$others" ] && echo "$others"; [ -n "$unsent" ] && echo "$unsent"; return 0
 }
 # --- attachments -------------------------------------------------------------------------------
 # A file travels as a root commit holding only that file, under refs/xchg/att/<blob hash>. A normal
@@ -927,7 +961,7 @@ cmd_who() {
   require_hubs; local q=""; while [ $# -gt 0 ]; do case "$1" in --hub) OPT_HUB="$2"; shift 2;; *) q="$1"; shift;; esac; done
   local hubs h; hubs=$(hub_filter); sync_hubs $hubs; local any=0
   for h in $hubs; do local c="$(hub_path "$h")/contacts.md"; [ -f "$c" ] || continue
-    if [ -z "$q" ]; then echo "== $h"; who_table "$h" "$c"; echo; any=1; continue; fi
+    if [ -z "$q" ]; then echo "== $h"; who_table "$h" "$c"; echo; any=1; contacts_note "$h" silent; continue; fi
     local hits; if have python3; then hits=$(python3 -c 'import sys
 q=sys.argv[1].casefold()
 print("\n".join(l.rstrip("\n") for l in open(sys.argv[2],encoding="utf-8") if l.startswith("|") and q in l.casefold()))' "$q" "$c")
@@ -1100,7 +1134,7 @@ cmd_hub() {
       conf_add_hub "$name" "$remote" "$path" "$login" "$key"
       hub_new "$name" "$path" "$remote" "$login" "$key"
       [ -n "$CFG_DEFAULT" ] || conf_set_global default "$name"
-      register_me "$name"
+      register_me "$name"; contacts_note "$name" silent
       echo "hub $name created: $path${remote:+ -> $(masked "$remote")}. Invite the others: xchg hub add $name $(masked "${remote:-<url>}")";;
     add)
       local name="${1:-}" remote="${2:-}" login="" path="" key=""; shift 2 2>/dev/null || udie "hub add <name> <remote> [--login L] [--path P] [--ssh-key K]"
@@ -1118,7 +1152,7 @@ cmd_hub() {
       hub_new "$name" "$path" "$remote" "$login" "$key"
       [ -n "$CFG_DEFAULT" ] || conf_set_global default "$name"
       echo "hub $name connected: $path <- $(masked "$remote")${login:+ (login $login)}${key:+ (ssh key $key)}"
-      register_me "$name";;
+      register_me "$name"; contacts_note "$name";;
     key) local name="${1:-}" kp="${2:-}"; [ -n "$kp" ] || udie "hub key <name> <path to key>"; require_hubs
       kp=$(expand_tilde "$kp"); is_hub "$name" || die "no hub '$name'"; check_key "$kp"
       local d="$(hub_path "$name")"; [ -d "$d/.git" ] && bind_key "$d" "$kp"
