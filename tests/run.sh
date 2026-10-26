@@ -621,6 +621,32 @@ mv "$SB/bare-work.off" "$SB/bare-work"
 run "$X" status; assert_contains "$OUT" "contract 6"
 run "$X" hub rm me; assert_eq "$RC" 0 "hub rm"; run "$X" hubs; assert_not_contains "$OUT" "me "
 
+t "the price of the inbox is per hub, not per message"
+# a hook has 30 s and a fork costs milliseconds on WSL2: the inbox must not spawn a process per message.
+# Every external tool is counted through a wrapper on PATH; the hub gets 600 messages.
+git -C "$W2" pull -q
+for i in $(seq -w 1 300); do
+  printf -- '---\nfrom: carol/web\nto: all\nkind: message\ndate: 2026-10-20T10:00:00Z\n---\n# Bulk %s\n' "$i" > "$W2/all/20261020-100000_carol_bulk$i.md"
+  printf -- '---\nfrom: bob/api\nto: @api\nkind: task\ndate: 2026-10-20T10:00:00Z\n---\n# Bulk task %s\n' "$i" > "$W2/projects/api/20261020-100000_bob_bulk$i.md"
+done
+( cd "$W2" && git add -A && git commit -qm bulk && git push -q )
+CNT="$SB/count"; mkdir -p "$CNT"; export XCHG_TEST_COUNT="$SB/count.log"
+for c in git awk sed grep sort head tail cat date mktemp sleep basename dirname tr paste find jq python3 timeout id uniq wc cut mv rm mkdir readlink; do
+  real=$(command -v "$c" 2>/dev/null) || continue
+  printf '#!/bin/sh\necho "$0" >> "$XCHG_TEST_COUNT"; exec "%s" "$@"\n' "$real" > "$CNT/$c"; chmod +x "$CNT/$c"; done
+: > "$XCHG_TEST_COUNT"
+run in_api env PATH="$CNT:$PATH" "$X" inbox; assert_eq "$RC" 0 "inbox with 600 messages"
+assert_eq "$(grep -c '_bulk' <<< "$OUT")" 600 "all 600 are listed"
+assert_contains "$OUT" "Bulk 300"; assert_contains "$OUT" "Bulk task 001"
+assert_eq "$(awk '/Bulk task 001/ {print $2, $3}' <<< "$OUT")" "@api task" "address and kind columns"
+N=$(wc -l < "$XCHG_TEST_COUNT" | tr -d ' ')
+[ "$N" -lt 120 ] && ok "inbox over 600 messages ran $N external processes" || fail "inbox over 600 messages ran $N external processes (a process per message?)"
+: > "$XCHG_TEST_COUNT"
+run in_api hook UserPromptSubmit env PATH="$CNT:$PATH" "$X" inbox --brief --max-age 300; assert_eq "$OUT" "" "the hook is silent: everything was shown"
+N=$(wc -l < "$XCHG_TEST_COUNT" | tr -d ' ')
+[ "$N" -lt 80 ] && ok "a silent hook over 600 messages ran $N external processes" || fail "a silent hook over 600 messages ran $N external processes"
+unset XCHG_TEST_COUNT
+
 t "repository name outside [a-z0-9._-]"
 mkdir -p "$SB/repos/TRENDS-Frontend"; git init -q "$SB/repos/TRENDS-Frontend"
 in_tf() { ( cd "$SB/repos/TRENDS-Frontend" && "$@" ); }

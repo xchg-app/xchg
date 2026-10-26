@@ -25,6 +25,7 @@ READ_GRACE="${XCHG_READ_GRACE:-86400}" # seconds: a new agent still sees message
 BRIEF=0                                # hook mode: report an unreachable hub at most once an hour
 SHOW_ALL=0                             # show other projects too
 SHOW_HISTORY=0                         # show messages already read
+UNSHOWN=0                              # list only what this agent hasn't been shown yet (hooks, wait)
 HOOK_EVENT=""                          # agent hook event (from JSON on stdin)
 HOOK_FORMAT=""                         # how the harness wants hook output: claude|hermes|cline|text
 HOOK_SESSION=0                         # the hook is the session-start one: show everything open
@@ -373,10 +374,12 @@ repo_root() {  # root of the main repository (the primary one for a worktree); e
   common=$(cd "$common" 2>/dev/null && pwd -P) || return 1
   dirname "$common"
 }
+CUR_PROJECT=""; CUR_PROJECT_SET=0   # computed once in main: the answer costs two git calls, and it is asked all over
 cur_project() {
+  [ "$CUR_PROJECT_SET" = 1 ] && { echo "$CUR_PROJECT"; return 0; }
   local root o; root=$(repo_root) || return 0
   o=$(git -C "$root" config --get xchg.project 2>/dev/null || true)
-  echo "${o:-$(basename "$root")}"
+  echo "${o:-${root##*/}}"
 }
 project_norm() {  # repository name -> valid project name: TRENDS-frontend -> trends-frontend
   printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C sed 's/[^a-z0-9._-]/-/g; s/--*/-/g; s/^-//; s/-$//'
@@ -411,7 +414,7 @@ cmd_agent() {
 msg_files() {  # <directory> -> messages of the address (no card, no subdirectories)
   local d="$1" f
   [ -d "$d" ] || return 0
-  for f in "$d"/*.md; do [ -e "$f" ] || continue; [ "$(basename "$f")" = README.md ] && continue; echo "$f"; done
+  for f in "$d"/*.md; do [ -e "$f" ] || continue; [ "${f##*/}" = README.md ] && continue; echo "$f"; done
   return 0
 }
 # Two kinds: a task is done once and closed; anything else (message, the older note, no kind) is a
@@ -420,7 +423,6 @@ kind_of() { case "$(meta kind "$1")" in (task) echo task;; (*) echo message;; es
 # Read marks are per agent: a message to a shared address (all, people/<me>) must be read by every
 # agent of mine, not "whoever reads first closes it for everyone".
 cursor_file() { local key="${2//\//_}" p; p=$(cur_project); echo "$(hub_path "$1")/.git/xchg-read/${p:-shell}--$key"; }
-is_read() { local cf; cf=$(cursor_file "$1" "$2"); [ -f "$cf" ] && grep -qxF "$3" "$cf"; }
 mark_read() {  # <hub> <address> [file|all unread]
   local h="$1" rel="$2" cf d b; cf=$(cursor_file "$h" "$rel"); d="$(hub_path "$h")/$rel"
   mkdir -p "$(dirname "$cf")"; touch "$cf"
@@ -435,18 +437,19 @@ mark_read() {  # <hub> <address> [file|all unread]
 baseline_file() { local p; p=$(cur_project); echo "$(hub_path "$1")/.git/xchg-read/${p:-shell}.baseline"; }
 utc_stamp() { date -u -d "@$1" +%Y%m%d-%H%M%S 2>/dev/null || date -u -r "$1" +%Y%m%d-%H%M%S; }
 agent_baseline() {  # <hub> -> how many unread messages were marked read (nothing if the agent isn't new)
-  local h="$1" bf cut me p own rel d f b n=0; bf=$(baseline_file "$h")
+  local h="$1" bf cut me p own rel d f b n addrs=(); bf=$(baseline_file "$h")
   [ -f "$bf" ] && return 0
   cut=$(utc_stamp $(( $(now_epoch) - READ_GRACE ))); me=$(hub_login "$h"); p=$(cur_project)
   own=""; [ -n "$p" ] && own="projects/$p/$me"; d=$(hub_path "$h")
-  while IFS= read -r rel; do [ -n "$rel" ] && [ "$rel" != "$own" ] || continue
-    local old=()
-    while IFS= read -r f; do [ -n "$f" ] || continue; b=$(basename "$f")
-      [[ "$b" < "$cut" ]] || continue; old[${#old[@]}]="$b"
-      [ "$(kind_of "$f")" = task ] || is_read "$h" "$rel" "$b" || is_muted "$h" "$b" || n=$((n+1))
-    done < <(msg_files "$d/$rel")
+  for rel in $(my_addrs "$h"; other_addrs "$h"); do [ "$rel" != "$own" ] && addrs+=("$rel"); done
+  # what the agent would have been shown: unread, unmuted messages older than the cut (tasks stay open anyway)
+  n=$(UNSHOWN=0 SHOW_HISTORY=0 scan_addrs "$h" "" ${addrs[@]+"${addrs[@]}"} |
+      awk -v cut="$cut" '$3 != "task" { b = $4; sub(/.*\//, "", b); if (b < cut) n++ } END { print n + 0 }')
+  for rel in ${addrs[@]+"${addrs[@]}"}; do local old=()
+    for f in "$d/$rel"/*.md; do [ -f "$f" ] || continue; b="${f##*/}"
+      [ "$b" != README.md ] && [[ "$b" < "$cut" ]] && old+=("$b"); done
     [ ${#old[@]} -gt 0 ] && mark_read_names "$h" "$rel" "${old[@]}"
-  done < <(my_addrs "$h"; other_addrs "$h")
+  done
   mkdir -p "$(dirname "$bf")"; echo "$cut" > "$bf"
   [ "$n" -gt 0 ] && echo "hub $h: $n earlier $(plural "$n" message messages) marked read for this new agent (xchg inbox --history)"
   return 0
@@ -495,34 +498,63 @@ contacts_notes() { local h; for h in "$@"; do contacts_note "$h"; done; return 0
 # A reply in my personal address is for the agent that has seen the message it answers (it sent that
 # message, or was shown it). For my other agents it counts as a message in another project. When no agent
 # in this clone has seen the original (it was sent from another machine), every agent shows the reply.
-foreign_reply() {  # <hub> <file>: a reply to a message another agent of mine has seen and this one hasn't
-  local re mine f; re=$(meta re "$2"); [ -n "$re" ] || return 1
-  is_shown "$1" "$re" && return 1
-  mine=$(shown_file "$1")
-  for f in "$(dirname "$mine")"/*; do
-    if [ -f "$f" ] && [ "$f" != "$mine" ] && grep -qxF "$re" "$f"; then return 0; fi
-  done
-  return 1
+# One awk pass per hub: it loads the mark files (read, shown, muted, other agents' shown) and reads every
+# message header itself. The price of a hub is a handful of processes, not a handful per message: a hub holds
+# hundreds of messages, a hook has 30 s, and on WSL2 one fork costs milliseconds. The inputs travel in ARGV
+# as awk's own assignments: mode=set set=<which> <mark files>, mode=msg rel=<address> <message files>.
+SCAN_AWK='
+function label(rel,  p, u) {
+  if (rel == "all") return "all"
+  if (rel == "people/" me) return "me"
+  if (rel ~ /^people\//) return substr(rel, 8)
+  if (rel ~ /^projects\/[^\/]+\/[^\/]+$/) { p = substr(rel, 10); u = p; sub(/\/.*/, "", p); sub(/.*\//, "", u)
+    return "@" p ":" (u == me ? "me" : u) }
+  if (rel ~ /^projects\//) return "@" substr(rel, 10)
+  return rel
 }
-list_addr() {  # <hub> <address> [mine|foreign] -> inbox lines; in my personal address: without / only others' replies
-  local h="$1" rel="$2" scope="${3:-}" f b k
-  [ "$rel" = "people/$(hub_login "$h")" ] || scope=""
-  while IFS= read -r f; do [ -n "$f" ] || continue; b=$(basename "$f")
-    if [ "$SHOW_HISTORY" != 1 ] && is_muted "$h" "$b"; then continue; fi
-    k=$(kind_of "$f")
-    if [ "$k" = task ]; then :
-    elif [ "$SHOW_HISTORY" = 1 ]; then :
-    elif is_read "$h" "$rel" "$b"; then continue; fi
-    case "$scope" in
-      mine)    if foreign_reply "$h" "$f"; then continue; fi;;
-      foreign) foreign_reply "$h" "$f" || continue;;
-    esac
-    local na; na=$(att_links "$f" | grep -c . || true)
-    printf '%-8s %-12s %-7s %-44s %-12s %s%s\n' "$h" "$(addr_label "$h" "$rel")" \
-      "$k" "$rel/$b" "$(meta from "$f")" "$(title "$f")" \
-      "$([ "$na" -gt 0 ] && echo " [+$na $(plural "$na" file files)]")"
-  done < <(msg_files "$(hub_path "$h")/$rel")
-  return 0
+function flush(  k, foreign, n, i, na, w) {
+  if (!inmsg) return; inmsg = 0
+  if (!history && (name in muted)) return
+  k = (kind == "task") ? "task" : "message"
+  if (k != "task" && !history && ((rel SUBSEP name) in rd)) return
+  if (rel == "people/" me && scope != "") {
+    foreign = (re != "" && !(re in shown) && (re in others))
+    if (scope == "mine" && foreign) return
+    if (scope == "foreign" && !foreign) return
+  }
+  if (unshown && (name in shown)) return
+  na = split(att, w, /[ \t]+/); n = 0; for (i = 1; i <= na; i++) if (w[i] != "") n++
+  printf "%-8s %-12s %-7s %-44s %-12s %s%s\n", hub, label(rel), k, rel "/" name, from, title,
+    (n > 0 ? " [+" n (n == 1 ? " file" : " files") "]" : "")
+}
+FNR == 1 { flush(); name = FILENAME; sub(/.*\//, "", name)
+  if (mode == "msg") { inmsg = 1; kind = from = re = att = title = ""; fm = 0 } }
+mode == "set" {
+  if (set ~ /^read:/) rd[substr(set, 6) SUBSEP $0] = 1
+  else if (set == "shown") shown[$0] = 1
+  else if (set == "others") others[$0] = 1
+  else muted[$0] = 1
+  next }
+title == "" && /^# / { title = substr($0, 3) }
+/^---$/ { if (fm < 2) fm++; next }
+fm == 1 && kind == "" && sub(/^kind: */, "") { kind = $0; next }
+fm == 1 && from == "" && sub(/^from: */, "") { from = $0; next }
+fm == 1 && re == "" && sub(/^re: */, "") { re = $0; next }
+fm == 1 && att == "" && sub(/^attachments: */, "") { att = $0; next }
+END { flush() }'
+scan_addrs() {  # <hub> <scope> <address>... -> inbox lines; scope mine|foreign|"" (how to treat replies in people/<me>)
+  local h="$1" scope="$2" d me p who f cf rel args=(); shift 2
+  d=$(hub_path "$h"); me=$(hub_login "$h"); p=$(cur_project); who="${p:-shell}"
+  args=(mode=set set=shown); [ -f "$d/.git/xchg-shown/$who" ] && args+=("$d/.git/xchg-shown/$who")
+  args+=(set=others); for f in "$d"/.git/xchg-shown/*; do [ -f "$f" ] && [ "${f##*/}" != "$who" ] && args+=("$f"); done
+  args+=(set=muted); [ -f "$d/.git/xchg-muted/$who" ] && args+=("$d/.git/xchg-muted/$who")
+  for rel in "$@"; do [ -d "$d/$rel" ] || continue
+    cf="$d/.git/xchg-read/$who--${rel//\//_}"
+    args+=(mode=set "set=read:$rel"); [ -f "$cf" ] && args+=("$cf")
+    args+=(mode=msg "rel=$rel")
+    for f in "$d/$rel"/*.md; do [ -f "$f" ] && [ "${f##*/}" != README.md ] && args+=("$f"); done
+  done
+  awk -v hub="$h" -v me="$me" -v scope="$scope" -v history="$SHOW_HISTORY" -v unshown="$UNSHOWN" "$SCAN_AWK" "${args[@]}"
 }
 write_msg() {  # <hub> <address> <kind> <from> <to> <slug> <re> <ref> <forwarded_from> <body> [attachments] -> path
   local d="$(hub_path "$1")" f="$2/$(date -u +%Y%m%d-%H%M%S)_${4//\//-}_$6.md"
@@ -567,13 +599,11 @@ hub_filter() { [ -z "${OPT_HUB:-}" ] && { echo ${HUBS[@]+"${HUBS[@]}"}; return; 
 unsent_warn() { local h n; for h in "$@"; do hub_has_remote "$h" || continue
     n=$(git -C "$(hub_path "$h")" rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
     [ "$n" -gt 0 ] && echo "hub $h: $n not sent to origin (xchg sync)"; done; return 0; }
-others_note() {  # <all|new> <hub...> -> count of messages in my other projects (muted ones not counted)
+others_note() {  # <hub...> -> count of messages in my other projects (muted ones not counted)
   [ "$SHOW_ALL" = 1 ] && return 0
-  local mode="$1" h rel lines n; shift
+  local h lines n
   for h in "$@"; do
-    lines=$(list_addr "$h" "people/$(hub_login "$h")" foreign
-      while IFS= read -r rel; do [ -n "$rel" ] && list_addr "$h" "$rel"; done < <(other_addrs "$h"); true)
-    [ "$mode" = new ] && lines=$(printf '%s\n' "$lines" | unshown_lines)
+    lines=$(scan_addrs "$h" foreign "people/$(hub_login "$h")" $(other_addrs "$h"))
     n=$(printf '%s' "$lines" | grep -c . || true)
     [ "$n" -gt 0 ] || continue
     record_shown "$lines"
@@ -596,10 +626,10 @@ cmd_inbox() {
     read_hook_input
     case "$HOOK_EVENT" in SessionStart|TaskStart) mode=all;; esac
     [ "$HOOK_SESSION" = 1 ] && mode=all
+    [ "$mode" = new ] && UNSHOWN=1
     out=$(inbox_lines $hubs)
-    [ "$mode" = new ] && out=$(printf '%s\n' "$out" | unshown_lines)
     record_shown "$out"
-    others=$(others_note "$mode" $hubs); unsent=$(unsent_warn $hubs)
+    others=$(others_note $hubs); unsent=$(unsent_warn $hubs)
     n=$(printf '%s' "$out" | grep -c . || true)
     local text; text=$(
       if [ "$n" -gt 0 ]; then
@@ -612,7 +642,7 @@ cmd_inbox() {
   fi
   out=$(inbox_lines $hubs)
   record_shown "$out"
-  others=$(others_note all $hubs); unsent=$(unsent_warn $hubs)
+  others=$(others_note $hubs); unsent=$(unsent_warn $hubs)
   [ -n "$out" ] && echo "$out" || echo "no new messages"
   [ -n "$base" ] && echo "$base"; [ -n "$book" ] && echo "$book"; [ -n "$others" ] && echo "$others"; [ -n "$unsent" ] && echo "$unsent"; return 0
 }
@@ -697,10 +727,10 @@ cmd_get() {  # download the attachments of a message, or one link, and print whe
   esac
 }
 inbox_lines() {  # <hub...> -> inbox lines for this session's addresses (with --all, other projects too)
-  local h rel scope=mine; [ "$SHOW_ALL" = 1 ] && scope=""
+  local h scope=mine; [ "$SHOW_ALL" = 1 ] && scope=""
   for h in "$@"; do
-    while IFS= read -r rel; do list_addr "$h" "$rel" "$scope"; done < <(my_addrs "$h")
-    if [ "$SHOW_ALL" = 1 ]; then while IFS= read -r rel; do list_addr "$h" "$rel"; done < <(other_addrs "$h"); fi
+    if [ "$SHOW_ALL" = 1 ]; then scan_addrs "$h" "$scope" $(my_addrs "$h") $(other_addrs "$h")
+    else scan_addrs "$h" "$scope" $(my_addrs "$h"); fi
   done; return 0
 }
 # --- waiting without a human -------------------------------------------------------------------
@@ -708,19 +738,16 @@ inbox_lines() {  # <hub...> -> inbox lines for this session's addresses (with --
 # the unshown, otherwise an open task or one's own message would wake the agent again and again.
 # The key is the file name: claim and done move the file but keep its name.
 shown_file() { local p; p=$(cur_project); echo "$(hub_path "$1")/.git/xchg-shown/${p:-shell}"; }
-is_shown() { local f; f=$(shown_file "$1"); [ -f "$f" ] && grep -qxF "$2" "$f"; }
 mark_shown() {  # <hub> <file name>...
   local h="$1" f x; f=$(shown_file "$h"); shift; mkdir -p "$(dirname "$f")"
   { if [ -f "$f" ]; then cat "$f"; fi; for x in "$@"; do echo "$x"; done; } | sort -u > "$f.tmp" && mv "$f.tmp" "$f"
 }
-record_shown() {  # <inbox lines>: mark everything in them as shown
-  local h rel; while read -r h _ _ rel _; do [ -n "${rel:-}" ] || continue; mark_shown "$h" "$(basename "$rel")"; done <<< "$1"; return 0
-}
-unshown_lines() {  # stdin: inbox lines -> only those this agent hasn't been shown yet
-  local line h rel
-  while IFS= read -r line; do [ -n "$line" ] || continue
-    read -r h _ _ rel _ <<< "$line"; is_shown "$h" "$(basename "$rel")" || printf '%s\n' "$line"; done
-  return 0
+record_shown() {  # <inbox lines>: mark everything in them as shown, one write per hub
+  local h x rel names
+  for h in ${HUBS[@]+"${HUBS[@]}"}; do names=()
+    while read -r x _ _ rel _; do [ "$x" = "$h" ] && [ -n "${rel:-}" ] && names+=("${rel##*/}"); done <<< "$1"
+    [ ${#names[@]} -gt 0 ] && mark_shown "$h" "${names[@]}"
+  done; return 0
 }
 read_hook_input() {  # an agent hook passes JSON on stdin; run by hand, stdin is a terminal: don't wait
   [ -t 0 ] && return 0
@@ -759,7 +786,6 @@ hook_print() {  # <text>
 # "Muted" is a message not for this agent: don't show it and don't wake the agent. The mark is local and
 # per agent; nothing changes in the hub. The key is the file name, as for "shown".
 muted_file() { local p; p=$(cur_project); echo "$(hub_path "$1")/.git/xchg-muted/${p:-shell}"; }
-is_muted() { local f; f=$(muted_file "$1"); [ -f "$f" ] && grep -qxF "$2" "$f"; }
 set_muted() {  # <hub> <on|off> <file name>
   local h="$1" mode="$2" name="$3" f; f=$(muted_file "$h"); mkdir -p "$(dirname "$f")"
   { if [ -f "$f" ]; then cat "$f"; fi; if [ "$mode" = on ]; then echo "$name"; fi; } |
@@ -784,11 +810,11 @@ cmd_wait() {
   { [[ "$timeout" =~ ^[0-9]+$ ]] && [[ "$interval" =~ ^[1-9][0-9]*$ ]]; } || udie "wait: --timeout and --interval are whole seconds (--interval from 1)"
   require_hubs
   local hubs start line h rel new n pause left; hubs=$(hub_filter); start=$(now_epoch)
-  BRIEF=1; MAX_AGE=0; XCHG_NO_SELFUPDATE=1   # don't pull the client repository on every round of waiting
+  BRIEF=1; MAX_AGE=0; XCHG_NO_SELFUPDATE=1 UNSHOWN=1   # don't pull the client repository on every round of waiting
   sync_hubs $hubs >/dev/null 2>&1 || true; baseline_hubs $hubs >/dev/null
   while :; do
     sync_hubs $hubs >/dev/null 2>&1 || true
-    new=$(inbox_lines $hubs | unshown_lines)
+    new=$(inbox_lines $hubs)
     if [ -n "$new" ]; then
       n=$(printf '%s\n' "$new" | grep -c .)
       echo "xchg: $n new $(plural "$n" message messages) (xchg inbox):"; echo "$new"
@@ -1046,7 +1072,7 @@ cmd_project_add() {
   # a repository with an unsuitable name becomes this project: otherwise its agent stays unaddressable
   if [ "$from_repo" = 0 ] && root=$(repo_root) && ! git -C "$root" config --get xchg.project >/dev/null 2>&1 \
      && ! [[ "$(basename "$root")" =~ $PROJ_RE ]]; then
-    git -C "$root" config xchg.project "$name"; echo "repository $(basename "$root") is now project '$name' (git config xchg.project)"
+    git -C "$root" config xchg.project "$name"; CUR_PROJECT="$name"; echo "repository ${root##*/} is now project '$name' (git config xchg.project)"
   fi
   local h; h="${OPT_HUB:-$(default_hub)}"; is_hub "$h" || die "no hub '$h'"
   sync_hubs "$h"; check_contract "$h"
@@ -1359,7 +1385,7 @@ H
 main() {
   OPT_HUB="${XCHG_HUB:-}"
   case "${1:-help}" in help|-h|--help) cmd_help; exit 0;; version) cmd_version; exit 0;; esac
-  load_conf
+  load_conf; CUR_PROJECT=$(cur_project); CUR_PROJECT_SET=1
   case "${1:-help}" in
     wait) shift; cmd_wait "$@";;
     mute) shift; cmd_mute "$@";;
