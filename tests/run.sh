@@ -270,6 +270,13 @@ assert_contains "$OUT" "Fix the schema"; assert_contains "$OUT" "Personal reques
 assert_contains "$OUT" "A task in the api queue"; assert_contains "$OUT" "Short day on Friday"
 assert_not_contains "$OUT" "Fix the header"
 assert_contains "$OUT" "in other projects (xchg inbox --all)"
+# the address and file columns are the message's own, not the next address's: read/seen/reply take the path as is
+assert_contains "$OUT" "work     all          message all/20260909-102000_carol_friday.md"
+assert_contains "$OUT" "work     me           task    people/alice/20260909-101000_bob_personal.md"
+assert_contains "$OUT" "work     @api         task    projects/api/20260909-101500_carol_queue.md"
+assert_contains "$OUT" "work     @api:me      task    projects/api/alice/20260909-100000_bob_schema.md"
+while read -r _ _ _ rel _; do [ -f "$H/exchange/work/$rel" ] || fail "inbox path does not exist in the hub: $rel"; done < <(grep -F .md <<< "$OUT")
+ok "every inbox path exists in the hub"
 run in_web "$X" inbox; assert_contains "$OUT" "Fix the header"; assert_not_contains "$OUT" "Fix the schema"
 run in_api "$X" inbox --all; assert_contains "$OUT" "Fix the header"; ok "--all lifts the project filter"
 run in_api "$X" inbox; assert_contains "$OUT" "@api:me"
