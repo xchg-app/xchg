@@ -1187,12 +1187,18 @@ cmd_hub() {
       conf_set_hub "$name" ssh_key "$kp"; hub_set "$name" key "$kp"
       echo "hub $name now uses the ssh key $kp";;
     check) local name="${1:-}"; [ -n "$name" ] || udie "hub check <name>"; require_hubs; is_hub "$name" || die "no hub '$name'"
-      local r k sc; r=$(hub_remote "$name"); [ -n "$r" ] || r=$(git -C "$(hub_path "$name")" remote get-url origin 2>/dev/null || true)
+      local r k sc ev=(); r=$(hub_remote "$name"); [ -n "$r" ] || r=$(git -C "$(hub_path "$name")" remote get-url origin 2>/dev/null || true)
       [ -n "$r" ] || die "hub $name is local: nothing to check"
       # the question is whether git can reach the hub, so ask git: that works for ssh and https alike
       # and depends on no greeting of any particular host
-      k=$(hub_key "$name"); sc=""; [ -n "$k" ] && sc="$(ssh_cmd "$k") -o BatchMode=yes"
-      if GIT_SSH_COMMAND="$sc" git ls-remote "$r" HEAD >/dev/null 2>&1; then echo "hub $name: $(masked "$r") answers${k:+, the key $k is accepted}"
+      # BatchMode: an ssh that wants a passphrase fails the check instead of waiting for a prompt.
+      # Without a key of its own the hub goes through the user's ssh setup (agent, ~/.ssh/config,
+      # core.sshCommand, GIT_SSH), so the check keeps it; an empty GIT_SSH_COMMAND makes git run nothing
+      k=$(hub_key "$name"); sc=""
+      if [ -n "$k" ]; then sc="$(ssh_cmd "$k")"
+      elif [ -n "${GIT_SSH_COMMAND:-}" ] || [ -z "${GIT_SSH:-}" ]; then sc="${GIT_SSH_COMMAND:-$(git config --get core.sshCommand || echo ssh)}"; fi
+      [ -z "$sc" ] || ev=("GIT_SSH_COMMAND=$sc -o BatchMode=yes")
+      if env ${ev[@]+"${ev[@]}"} GIT_TERMINAL_PROMPT=0 git ls-remote "$r" HEAD >/dev/null 2>&1; then echo "hub $name: $(masked "$r") answers${k:+, the key $k is accepted}"
       else die "hub $name: git cannot reach $(masked "$r")${k:+ with the key $k} (give the hub owner the public key${k:+ $k.pub}, or check the address)"; fi;;
     upgrade) local name="${1:-}" bump=0; shift || true
       while [ $# -gt 0 ]; do case "$1" in --contract) bump=1; shift;; *) udie "hub upgrade <name> [--contract]";; esac; done

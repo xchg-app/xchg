@@ -112,6 +112,28 @@ cp "$SB/conf.keyed" "$H/.config/xchg/xchg.conf"
 run "$X" hub rm keyed >/dev/null
 fi
 
+t "hub check without a key of its own goes through the user's ssh"
+# a stand-in ssh: logs its arguments and runs the remote command locally
+mkdir -p "$SB/fakessh"; cat > "$SB/fakessh/ssh" <<'SH'
+#!/usr/bin/env bash
+echo "$*" >> "${0%/*}/log"
+while [ $# -gt 0 ]; do case "$1" in -o|-i|-p) shift 2;; -*) shift;; *) break;; esac; done
+shift; eval "$*"
+SH
+chmod +x "$SB/fakessh/ssh"
+cp "$CONFF" "$SB/conf.ssh"
+sed -i.bak "s#^\(remote *= *\).*bare-work\$#\1fakehost:$SB/bare-work#" "$CONFF"
+PATH="$SB/fakessh:$PATH" run "$X" hub check work; assert_eq "$RC" 0 "a keyless hub over ssh answers"
+assert_contains "$OUT" "answers"; assert_contains "$(cat "$SB/fakessh/log")" "BatchMode=yes"
+: > "$SB/fakessh/log"
+git config --global core.sshCommand "$SB/fakessh/ssh -o Via=config"
+run "$X" hub check work; assert_eq "$RC" 0 "core.sshCommand is kept for a keyless hub"
+assert_contains "$(cat "$SB/fakessh/log")" "Via=config"; git config --global --unset core.sshCommand
+sed -i.bak "s#^\(remote *= *\).*bare-work\$#\1fakehost:$SB/nosuch#" "$CONFF"
+PATH="$SB/fakessh:$PATH" run "$X" hub check work; assert_eq "$RC" 1 "an unreachable keyless hub fails the check"
+assert_contains "$OUT" "cannot reach"
+cp "$SB/conf.ssh" "$CONFF"
+
 t "harness packages"
 # every package is built by tools/package.sh; the package repositories hold nothing else
 PKG="$SB/packages"

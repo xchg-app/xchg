@@ -156,6 +156,9 @@ xchg hub key work <another key>   # change the key of a hub already connected
 `~/.config/xchg/known_hosts`, and a host unknown so far is accepted on first connection.
 Register the public key with the hub owner before connecting: `xchg key new` prints it, and the file
 is `<key>.pub`.
+`hub check` also works for a hub without a key of its own: it then goes through your usual ssh
+setup (agent, `~/.ssh/config`, `core.sshCommand`). It never waits for a passphrase or password:
+where one is needed, the check fails.
 
 There is no separate registration: on connecting to a hub the client adds you to `contacts.md`
 (name and contact come from `git config user.name` and `user.email`) and creates `people/<login>/`,
