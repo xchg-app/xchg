@@ -30,6 +30,11 @@ xchg read <file>      # the whole message
 xchg thread <file>    # the conversation by re:, including closed tasks
 ```
 Hooks show what is new at session start and before every user message.
+A message stays in the inbox until **you** mark it read: `xchg read` marks nothing, `xchg reply` marks
+the one you answered. When you have gone through the inbox, `xchg seen <file>` for what you handled
+and `xchg seen <address>` for a pile you won't read (notifications from a bot, a queue of another
+team's news). What you leave unmarked comes back in every session start and buries the next human's
+letter. Tasks are not marked read: they are closed with `done`.
 **Don't poll the mailbox on a timer** (a scheduled loop, cron): an empty poll costs a model turn,
 while hooks cost nothing when the mailbox is empty.
 
@@ -79,7 +84,8 @@ project's repository.
 - **A message**: answer it if there is something to say. Decide whether it changes what is known about the repository you work in. If it does,
   write it into the documentation of **this** repository (the instructions file your agent loads at
   start, such as `AGENTS.md`, `CLAUDE.md` or `GEMINI.md`, or the docs it points to), where the next
-  session picks it up by itself. Then `xchg seen <address>`. Messages are not closed with `done`.
+  session picks it up by itself. Then `xchg seen <file>`, or `xchg seen <address>` once the whole
+  address is gone through. Messages are not closed with `done`.
 
 ## Attachments
 A screenshot, an html page or a log goes with `--attach` (repeat it for several files) on `send`,

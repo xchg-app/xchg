@@ -416,7 +416,7 @@ printf -- '---\nfrom: carol/web\nto: alice\nkind: task\ndate: 2026-09-10T10:00:0
 run in_api hook UserPromptSubmit "$X" inbox --brief; assert_contains "$OUT" "Not for the api agent"; ok "the hook shows a new message"
 # a hook gets JSON with additionalContext: the one form every supported harness adds to the model context
 assert_eq "$(jq -r .hookSpecificOutput.hookEventName <<< "$OUT")" UserPromptSubmit "hook output is valid JSON with the event name"
-assert_contains "$(jq -r .hookSpecificOutput.additionalContext <<< "$OUT")" $'new message (xchg inbox):\n'
+assert_contains "$(jq -r .hookSpecificOutput.additionalContext <<< "$OUT")" $'new message (xchg inbox; xchg seen <address> for what needs no action):\n'
 run in_api hook UserPromptSubmit "$X" inbox --brief; assert_eq "$OUT" "" "a repeated hook on the same stays silent (0 bytes)"
 run in_api hook SessionStart "$X" inbox --brief; assert_contains "$OUT" "in the inbox"; assert_contains "$OUT" "Not for the api agent"
 ok "session start shows what is open again"
@@ -726,7 +726,7 @@ printf -- '---\nfrom: bob/api\nto: @api\nkind: message\ndate: 2026-09-12T11:02:0
 printf -- '---\nfrom: jira-bot/jira\nto: @api:alice\nkind: task\ndate: 2026-09-12T11:05:00Z\n---\n# Bot task stays a line\n' > "$WD/projects/api/alice/20260912-110500_jira-bot_task.md"
 ( cd "$WD" && git add -A && git commit -qm digest && git push -q )
 run hook SessionStart in_api "$X" inbox --brief --hook-format text; assert_eq "$RC" 0 "session hook over a pile"
-assert_contains "$OUT" "in the inbox, bulk senders one line each (xchg inbox):"
+assert_contains "$OUT" "in the inbox, bulk senders one line each (xchg inbox; xchg seen <address> for what needs no action):"
 assert_contains "$OUT" "A human writes once"; assert_contains "$OUT" "Bot task stays a line"
 assert_contains "$OUT" "projects/api/20260912-101400_jira-bot_trnd-14.md jira-bot/jira 14 messages, latest: TRND-14 closed"
 assert_not_contains "$OUT" "TRND-13 closed"; ok "the pile is one line, and the line is the latest message's own"
@@ -734,6 +734,10 @@ assert_eq "$(grep -c 'jira-bot' <<< "$OUT")" 2 "one line for the pile, one for t
 assert_contains "$OUT" "bob/api      2 messages, latest: Bob second"; assert_not_contains "$OUT" "Bob first"; ok "two messages are already one line: one line per sender and address"
 run in_api hook UserPromptSubmit "$X" inbox --brief --max-age 300; assert_eq "$OUT" "" "everything in the digest counts as shown"
 run in_api "$X" inbox; assert_contains "$OUT" "TRND-13 closed"; ok "the full inbox is untouched by the digest"
+run in_api "$X" read projects/api/20260912-110000_carol_once.md; assert_eq "$RC" 0 "read a message"
+assert_contains "$OUT" "A human writes once"; assert_contains "$OUT" "once handled, mark it read: xchg seen work:projects/api/20260912-110000_carol_once.md"
+run in_api "$X" inbox; assert_contains "$OUT" "A human writes once"; ok "read marks nothing: the message is still open"
+run in_api "$X" read projects/api/alice/20260912-110500_jira-bot_task.md; assert_not_contains "$OUT" "mark it read"; ok "a task gets no such hint"
 { echo 'digest = 0'; cat "$CONFF"; } > "$CONFF.new" && mv "$CONFF.new" "$CONFF"   # a global key goes above the hub sections
 printf -- '---\nfrom: jira-bot/jira\nto: @api\nkind: message\ndate: 2026-09-12T12:00:00Z\n---\n# TRND-15 closed\n' > "$WD/projects/api/20260912-120000_jira-bot_trnd-15.md"
 ( cd "$WD" && git add -A && git commit -qm more && git push -q )

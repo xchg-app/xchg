@@ -48,6 +48,8 @@ messages become one line per sender and address, with the count and the latest t
 <address>` clears such a pile once it has been looked at. Everything the digest stands for counts
 as shown.
 
+`read` prints the message and marks nothing: a message read in a session that died must still be
+there for the next one; it reminds on stderr to mark it. `reply` marks the message it answers.
 `seen` marks messages as read: without an argument — all addresses of this session, otherwise an
 address or a single file. Every agent has its own marks, and they are kept not in the hub but
 locally: `.git/xchg-read/` in the hub clone.

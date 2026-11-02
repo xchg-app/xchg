@@ -710,8 +710,8 @@ cmd_inbox() {
     if [ "$digest" -gt 0 ] && [ "$n" -gt "$digest" ]; then shown=$(digest_lines "$out"); how=", bulk senders one line each"; fi
     text=$(
       if [ "$n" -gt 0 ]; then
-        if [ "$mode" = all ]; then echo "xchg: $n $(plural "$n" message messages) in the inbox$how (xchg inbox):"
-        else echo "xchg: $n new $(plural "$n" message messages)$how (xchg inbox):"; fi
+        if [ "$mode" = all ]; then echo "xchg: $n $(plural "$n" message messages) in the inbox$how (xchg inbox; xchg seen <address> for what needs no action):"
+        else echo "xchg: $n new $(plural "$n" message messages)$how (xchg inbox; xchg seen <address> for what needs no action):"; fi
         echo "$shown"
       fi
       [ -n "$base" ] && echo "$base"; [ -n "$book" ] && echo "$book"; [ -n "$others" ] && echo "$others"; [ -n "$np" ] && echo "$np"; [ -n "$unsent" ] && echo "$unsent"; true)
@@ -908,7 +908,10 @@ cmd_wait() {
   done
 }
 cmd_read() { require_hubs; [ -n "${1:-}" ] || udie "read <file>"; locate "$1"; sync_hubs "$L_HUB"
-  local f="$(hub_path "$L_HUB")/$L_REL"; [ -f "$f" ] || die "no file $L_HUB:$L_REL"; cat "$f"; }
+  local f="$(hub_path "$L_HUB")/$L_REL"; [ -f "$f" ] || die "no file $L_HUB:$L_REL"; cat "$f"
+  # Reading marks nothing: a message read in a session that died must be there for the next one. The
+  # mark is the agent's own step, so the hint comes with every message.
+  [ "$(kind_of "$f")" = task ] || warn "once handled, mark it read: xchg seen $L_HUB:$L_REL"; }
 cmd_seen() {  # mark messages as read: a whole address, one file or all my addresses
   require_hubs; local target="${1:-}" h rel n=0
   if [ -z "$target" ]; then
