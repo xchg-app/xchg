@@ -109,9 +109,9 @@ file name from `[A-Za-z0-9._-]`; the body is read from stdin. `--ref`, optional,
 current state lives (a repository, a file, a PR).
 
 `reply` answers the sender of the original message — the address and `re:` come from the file, so
-you can't pick the wrong hub; the reply is a message, `--task` makes it a task. A reply to your own
-message goes on to its recipient (the `to` of the file), so a thread can be continued from either
-side. Answering a message marks it read; a task stays open until `done`.
+you can't pick the wrong hub; the reply is a message, `--task` makes it a task. A reply to this agent's own
+message (the same person and project) goes on to its recipient (the `to` of the file), so a thread
+can be continued from either side; a message from another of your agents is answered to that agent. Answering a message marks it read; a task stays open until `done`.
 A message from a repository that is not a project in the hub is signed with the person alone, and the
 reply to it will come to you as a person, not to this agent: the client warns about it on stderr and
 suggests `xchg projects add`.

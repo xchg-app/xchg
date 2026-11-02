@@ -1004,7 +1004,8 @@ cmd_reply() {
   sync_hubs ${HUBS[@]+"${HUBS[@]}"}; locate "$src"
   local f="$(hub_path "$L_HUB")/$L_REL"; [ -f "$f" ] || die "no file $L_HUB:$L_REL"
   local from to; from=$(meta from "$f"); [ -n "$from" ] || die "$L_REL has no from field: nobody to reply to"
-  if [ "${from%%/*}" = "$(hub_login "$L_HUB")" ]; then   # my own message: the thread goes on to its recipient, not back to me
+  if [ "$from" = "$(sender_id "$L_HUB")" ]; then   # this agent's own message: the thread goes on to its recipient, not back to me
+    # (my other agents share the login, and a reply to one of them must still reach that agent)
     to=$(meta to "$f"); [ -n "$to" ] || die "$L_REL is yours and has no to field: nobody to reply to"; to="$L_HUB:$to"
   else case "$from" in */*) to="$L_HUB:@${from#*/}:${from%%/*}";; *) to="$L_HUB:$from";; esac; fi
   parse_addr "$to"; check_contract "$A_HUB"

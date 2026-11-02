@@ -496,6 +496,10 @@ run in_api "$X" send me:@web:alice handoff <<< '# Continue the migration'; asser
 assert_contains "$OUT" "sent: me:projects/web/alice/"
 run in_web "$X" inbox; assert_contains "$OUT" "Continue the migration"; assert_contains "$OUT" "me"
 run in_api "$X" inbox; assert_not_contains "$OUT" "Continue the migration"; ok "another address isn't shown in this session"
+HO=$(ls "$H/exchange/me/projects/web/alice/"*handoff.md)
+run in_web "$X" reply "$HO" started <<< '# Started'; assert_eq "$RC" 0 "my web agent answers my api agent"
+assert_contains "$OUT" "sent: me:projects/api/alice/"; ok "the reply goes to the agent that wrote, not back to the replier: the login is shared, the agent is not"
+run in_api "$X" inbox; assert_contains "$OUT" "Started"
 run in_api "$X" send @api:alice self <<< '# A note to self'; assert_contains "$OUT" "exists in hubs: work (4 people), me (only you)"
 ok "the same address in two hubs is an error with a list"
 run in_api "$X" send me:@api:alice self <<< '# A note to self'; assert_eq "$RC" 0 "a hub prefix resolves the ambiguity"
