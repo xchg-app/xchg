@@ -174,6 +174,7 @@ xchg hub key work <другой ключ>   # поменять ключ у уж�
 
 ```ini
 default = work            # хаб для адресов без префикса, когда их несколько
+digest  = 12              # вывод хука длиннее этого сворачивает массовых отправителей (0 = никогда)
 
 [hub work]
 remote  = git@github.com:team/exchange.git

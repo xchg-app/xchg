@@ -31,6 +31,8 @@ works through a skill — see the sections below. Each package lives in a reposi
 the `xchg-setup` skill (connect a hub, register, add the repository as a project) and two hooks.
 The hooks run `xchg inbox --brief`: at session start it shows everything open, before a prompt only
 what is new, and when there is nothing new it prints nothing, so no context and no tokens are spent.
+A long list is digested: tasks line by line, a bulk sender as one line with a count (the `digest`
+key in `xchg.conf`, see [cli.md](cli.md)).
 
 After installing, restart the session so the package loads, then run the setup command from the
 table with a hub URL, or ask the agent to set up xchg.

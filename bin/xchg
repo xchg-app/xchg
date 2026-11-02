@@ -59,7 +59,7 @@ json_str() {  # stdin -> the contents of a JSON string literal (without quotes);
 # --- config: hub registry ------------------------------------------------------------------
 # The hub registry is parallel indexed arrays: bash 3.2 (macOS system bash) has no associative ones.
 HUBS=() HUB_PATHS=() HUB_REMOTES=() HUB_LOGINS=() HUB_KEYS=()
-CFG_DEFAULT="" CONF_MODE="none"
+CFG_DEFAULT="" CFG_DIGEST="" CONF_MODE="none"   # digest: hook lines above which bulk senders collapse (default 12, 0 = never)
 
 parse_conf() {  # INI in awk: key = value, [hub <name>] sections, # comments; anything else is an error with a line number
   local out tag a b c
@@ -76,7 +76,9 @@ parse_conf() {  # INI in awk: key = value, [hub <name>] sections, # comments; an
   while IFS=$'\t' read -r tag a b c; do
     case "$tag" in
       E) die "$CONF:$a: $b";;
-      G) case "$a" in default) CFG_DEFAULT="$b";; *) die "$CONF: unknown key '$a'";; esac;;
+      G) case "$a" in default) CFG_DEFAULT="$b";;
+           digest) case "$b" in ""|*[!0-9]*) die "$CONF: digest = $b, but it must be a number of lines (0 = never collapse)";; esac; CFG_DIGEST="$b";;
+           *) die "$CONF: unknown key '$a'";; esac;;
       H) hub_new "$a";;
       S) case "$b" in
            path)   hub_set "$a" path "$(expand_tilde "$c")";;
@@ -655,6 +657,19 @@ hub_filter() { [ -z "${OPT_HUB:-}" ] && { echo ${HUBS[@]+"${HUBS[@]}"}; return; 
 unsent_warn() { local h n; for h in "$@"; do hub_has_remote "$h" || continue
     n=$(git -C "$(hub_path "$h")" rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
     [ "$n" -gt 0 ] && echo "hub $h: $n not sent to origin (xchg sync)"; done; return 0; }
+# A hook's list has a budget: the harness cuts a long one, and the first lines are then whoever posted
+# most, i.e. a bot. Above the threshold, tasks stay line by line and messages become one line per
+# sender and address, with the count and the latest title; the line keeps the inbox columns, so
+# read, seen and reply take it as is. Everything in it still counts as shown.
+digest_lines() {  # <inbox lines>
+  printf '%s\n' "$1" | awk '
+    function rest(s, i) { for (i = 1; i <= 5; i++) sub(/^[ \t]*[^ \t]+/, "", s); sub(/^[ \t]+/, "", s); return s }
+    { L[NR] = $0; if ($3 == "task") next; k = $1 SUBSEP $2 SUBSEP $5; cnt[k]++; last[k] = NR; key[NR] = k }
+    END { for (i = 1; i <= NR; i++) { if (!(i in key) || cnt[key[i]] == 1) { print L[i]; continue }
+      if (last[key[i]] != i) continue
+      split(L[i], f, /[ \t]+/)
+      printf "%-8s %-12s %-7s %-44s %-12s %d messages, latest: %s\n", f[1], f[2], f[3], f[4], f[5], cnt[key[i]], rest(L[i]) } }'
+}
 no_project_note() {  # the repository is a project nowhere: its project addresses can't be checked, say so
   [ -n "$CUR_PROJECT" ] && ! project_known || return 0
   echo "xchg: repository '$CUR_PROJECT' is not a project in any hub, so mail to its project addresses is not checked (xchg projects add)"
@@ -691,11 +706,13 @@ cmd_inbox() {
     record_shown "$out"
     others=$(others_note $hubs); unsent=$(unsent_warn $hubs); np=""; [ "$mode" = all ] && np=$(no_project_note)
     n=$(printf '%s' "$out" | grep -c . || true)
-    local text; text=$(
+    local text digest="${CFG_DIGEST:-12}" shown="$out" how=""
+    if [ "$digest" -gt 0 ] && [ "$n" -gt "$digest" ]; then shown=$(digest_lines "$out"); how=", bulk senders one line each"; fi
+    text=$(
       if [ "$n" -gt 0 ]; then
-        if [ "$mode" = all ]; then echo "xchg: $n $(plural "$n" message messages) in the inbox (xchg inbox):"
-        else echo "xchg: $n new $(plural "$n" message messages) (xchg inbox):"; fi
-        echo "$out"
+        if [ "$mode" = all ]; then echo "xchg: $n $(plural "$n" message messages) in the inbox$how (xchg inbox):"
+        else echo "xchg: $n new $(plural "$n" message messages)$how (xchg inbox):"; fi
+        echo "$shown"
       fi
       [ -n "$base" ] && echo "$base"; [ -n "$book" ] && echo "$book"; [ -n "$others" ] && echo "$others"; [ -n "$np" ] && echo "$np"; [ -n "$unsent" ] && echo "$unsent"; true)
     hook_print "$text"; return 0

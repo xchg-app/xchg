@@ -716,6 +716,32 @@ run in_tool inbox; assert_contains "$OUT" "repository 'tool' is not a project in
 run hook SessionStart in_tool inbox --brief; assert_contains "$OUT" "repository 'tool' is not a project in any hub"
 run hook UserPromptSubmit in_tool inbox --brief --max-age 300; assert_not_contains "$OUT" "not a project"; ok "the prompt hook stays silent about it"
 
+t "a long hook list is digested: tasks line by line, a bulk sender one line"
+WD="$SB/wd"; git clone -q "$SB/bare-work" "$WD"
+for i in 01 02 03 04 05 06 07 08 09 10 11 12 13 14; do
+  printf -- '---\nfrom: jira-bot/jira\nto: @api\nkind: message\ndate: 2026-09-12T10:%s:00Z\n---\n# TRND-%s closed\n' "$i" "$i" > "$WD/projects/api/20260912-10${i}00_jira-bot_trnd-$i.md"; done
+printf -- '---\nfrom: carol/web\nto: @api\nkind: message\ndate: 2026-09-12T11:00:00Z\n---\n# A human writes once\n' > "$WD/projects/api/20260912-110000_carol_once.md"
+printf -- '---\nfrom: bob/api\nto: @api\nkind: message\ndate: 2026-09-12T11:01:00Z\n---\n# Bob first\n' > "$WD/projects/api/20260912-110100_bob_first.md"
+printf -- '---\nfrom: bob/api\nto: @api\nkind: message\ndate: 2026-09-12T11:02:00Z\n---\n# Bob second\n' > "$WD/projects/api/20260912-110200_bob_second.md"
+printf -- '---\nfrom: jira-bot/jira\nto: @api:alice\nkind: task\ndate: 2026-09-12T11:05:00Z\n---\n# Bot task stays a line\n' > "$WD/projects/api/alice/20260912-110500_jira-bot_task.md"
+( cd "$WD" && git add -A && git commit -qm digest && git push -q )
+run hook SessionStart in_api "$X" inbox --brief --hook-format text; assert_eq "$RC" 0 "session hook over a pile"
+assert_contains "$OUT" "in the inbox, bulk senders one line each (xchg inbox):"
+assert_contains "$OUT" "A human writes once"; assert_contains "$OUT" "Bot task stays a line"
+assert_contains "$OUT" "projects/api/20260912-101400_jira-bot_trnd-14.md jira-bot/jira 14 messages, latest: TRND-14 closed"
+assert_not_contains "$OUT" "TRND-13 closed"; ok "the pile is one line, and the line is the latest message's own"
+assert_eq "$(grep -c 'jira-bot' <<< "$OUT")" 2 "one line for the pile, one for the task"
+assert_contains "$OUT" "bob/api      2 messages, latest: Bob second"; assert_not_contains "$OUT" "Bob first"; ok "two messages are already one line: one line per sender and address"
+run in_api hook UserPromptSubmit "$X" inbox --brief --max-age 300; assert_eq "$OUT" "" "everything in the digest counts as shown"
+run in_api "$X" inbox; assert_contains "$OUT" "TRND-13 closed"; ok "the full inbox is untouched by the digest"
+{ echo 'digest = 0'; cat "$CONFF"; } > "$CONFF.new" && mv "$CONFF.new" "$CONFF"   # a global key goes above the hub sections
+printf -- '---\nfrom: jira-bot/jira\nto: @api\nkind: message\ndate: 2026-09-12T12:00:00Z\n---\n# TRND-15 closed\n' > "$WD/projects/api/20260912-120000_jira-bot_trnd-15.md"
+( cd "$WD" && git add -A && git commit -qm more && git push -q )
+run hook SessionStart in_api "$X" inbox --brief --hook-format text; assert_contains "$OUT" "TRND-13 closed"; assert_not_contains "$OUT" "bulk senders"; ok "digest = 0 switches it off"
+sed -i.bak 's/^digest = 0$/digest = many/' "$CONFF"
+run in_api "$X" inbox; assert_eq "$RC" 1 "a bad digest value is a config error"; assert_contains "$OUT" "digest = many, but it must be a number"
+sed -i.bak '/^digest = many$/d' "$CONFF"
+
 t "config errors"
 printf 'default = a\n[hub a]\npath = /tmp/a\nbogus line\n' > "$H/.config/xchg/xchg.conf"
 run "$X" hubs; assert_eq "$RC" 1 "a bad line is an error"; assert_contains "$OUT" "xchg.conf:4: cannot parse"

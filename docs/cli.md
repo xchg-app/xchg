@@ -42,7 +42,11 @@ addresses: the whole hub, you as a person, your project and your agent. Open tas
 visible, messages until they are read. Messages in your other projects, and replies to what your other agents sent, collapse into one counter line;
 `--all` shows them, `--history` adds messages already read and muted messages. `--brief` is the format
 for hooks: at session start it shows everything open, otherwise only what this agent hasn't been
-shown yet, so a repeated hook on the same thing stays silent (0 bytes).
+shown yet, so a repeated hook on the same thing stays silent (0 bytes). A hook's output has a budget:
+when the list is longer than `digest` lines (`xchg.conf`, default 12), tasks stay line by line, and
+messages become one line per sender and address, with the count and the latest title. The line keeps the inbox columns, so `read`, `seen` and `reply` take it as is; `xchg seen
+<address>` clears such a pile once it has been looked at. Everything the digest stands for counts
+as shown.
 
 `seen` marks messages as read: without an argument — all addresses of this session, otherwise an
 address or a single file. Every agent has its own marks, and they are kept not in the hub but

@@ -178,6 +178,7 @@ to a server, and the conversation starts going between machines.
 
 ```ini
 default = work            # hub for addresses without a prefix when there are several
+digest  = 12              # hook output longer than this collapses bulk senders (0 = never)
 
 [hub work]
 remote  = git@github.com:team/exchange.git
