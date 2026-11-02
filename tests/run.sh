@@ -373,6 +373,16 @@ assert_not_contains "$OUT" "syntax error"; assert_eq "$(awk '/Personal request/ 
 run in_api "$X" done "$P" ; run in_api "$X" thread "$R"
 assert_not_contains "$OUT" "syntax error"; assert_eq "$(awk '/Personal request/ {print $3}' <<< "$OUT")" "closed" "a closed task is read from history"
 run in_api "$X" sent; assert_contains "$OUT" "projects/api/bob/"; assert_contains "$OUT" "Done it"
+run in_api "$X" reply "$R" again <<< '# Forgot to say'; assert_eq "$RC" 0 "reply to my own message"
+assert_contains "$OUT" "sent: work:projects/api/bob/"; ok "a reply to my own message goes on to its recipient, not back to me"
+R3=$(ls -t "$H/exchange/work/projects/api/bob/"*again.md | head -1); assert_contains "$(cat "$R3")" "re: $(basename "$R")"
+git -C "$W2" pull -q
+printf -- '---\nfrom: carol/web\nto: @api:alice\nkind: message\ndate: 2026-09-09T12:00:00Z\n---\n# Lunch at noon?\n' > "$W2/projects/api/alice/20260909-120000_carol_lunch.md"
+( cd "$W2" && git add -A && git commit -qm lunch && git push -q )
+run in_api "$X" inbox; assert_contains "$OUT" "Lunch at noon?"
+run in_api "$X" reply "$H/exchange/work/projects/api/alice/20260909-120000_carol_lunch.md" lunch-yes <<< '# Yes'; assert_eq "$RC" 0 "reply to a message"
+run in_api "$X" inbox; assert_not_contains "$OUT" "Lunch at noon?"; ok "an answered message is read"
+run in_api "$X" inbox --history; assert_contains "$OUT" "Lunch at noon?"
 
 t "wait: waiting without a human"
 git -C "$W2" pull -q

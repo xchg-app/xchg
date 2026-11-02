@@ -1004,12 +1004,15 @@ cmd_reply() {
   sync_hubs ${HUBS[@]+"${HUBS[@]}"}; locate "$src"
   local f="$(hub_path "$L_HUB")/$L_REL"; [ -f "$f" ] || die "no file $L_HUB:$L_REL"
   local from to; from=$(meta from "$f"); [ -n "$from" ] || die "$L_REL has no from field: nobody to reply to"
-  case "$from" in */*) to="$L_HUB:@${from#*/}:${from%%/*}";; *) to="$L_HUB:$from";; esac
+  if [ "${from%%/*}" = "$(hub_login "$L_HUB")" ]; then   # my own message: the thread goes on to its recipient, not back to me
+    to=$(meta to "$f"); [ -n "$to" ] || die "$L_REL is yours and has no to field: nobody to reply to"; to="$L_HUB:$to"
+  else case "$from" in */*) to="$L_HUB:@${from#*/}:${from%%/*}";; *) to="$L_HUB:$from";; esac; fi
   parse_addr "$to"; check_contract "$A_HUB"
   [ ${#att[@]} -eq 0 ] || links=$(upload_all "$A_HUB" "${att[@]}") || exit 1
   local me nf; me=$(sender_id "$A_HUB")
   nf=$(write_msg "$A_HUB" "$A_REL" "$kind" "$me" "$A_LABEL" "$slug" "$(basename "$L_REL")" "" "" "$body" "$links")
   warn_secrets "$body"; warn_no_project "$A_HUB"
+  [ "$(kind_of "$f")" = task ] || mark_read "$L_HUB" "$(dirname "$L_REL")" "$L_REL"   # answered is handled; a task stays until done
   mark_shown "$A_HUB" "$(basename "$nf")"; hub_push "$A_HUB" "[xchg] $me -> $A_LABEL: $slug (reply)" || true; echo "sent: $A_HUB:$nf"
 }
 cmd_claim() {  # take a task: the file moves to my agent's address
