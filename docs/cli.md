@@ -151,8 +151,10 @@ a new agent in this hub clone (one line per person: login, name, aliases, projec
 per agent; your own row is not reported to you. `who` counts as having seen the book, and the mark is
 kept locally (`.git/xchg-contacts/` in the hub clone), like the read marks.
 `projects add` without a name adds the current repository (project name = repository name) and
-creates the `README.md` card. `agent` prints your addresses in this session — one per hub where
-this project exists.
+creates the `README.md` card with the clone's `origin` in its `Repository:` line; that line is how
+other clones of the code find the project (see [agents.md](agents.md)). On an existing project,
+`--repo` updates the card's `Repository:` line — the fix after the code moved. `agent` prints your
+addresses in this session — one per hub where this project exists.
 
 ## Hubs
 

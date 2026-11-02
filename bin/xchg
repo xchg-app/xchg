@@ -367,45 +367,99 @@ addr_label() {  # <hub> <relative path> -> short address label
 }
 
 # --- agent identity ----------------------------------------------------------------------------
-# Agent = person x project. The session's project is the name of the main repository
-# (the primary one for a worktree), or git config xchg.project if the clone is named differently.
 repo_root() {  # root of the main repository (the primary one for a worktree); exit 1 outside git
   local common; common=$(git rev-parse --git-common-dir 2>/dev/null) || return 1
   common=$(cd "$common" 2>/dev/null && pwd -P) || return 1
   dirname "$common"
 }
-CUR_PROJECT=""; CUR_PROJECT_SET=0   # computed once in main: the answer costs two git calls, and it is asked all over
-cur_project() {
-  [ "$CUR_PROJECT_SET" = 1 ] && { echo "$CUR_PROJECT"; return 0; }
+# The session's project in a hub is found in this order, each step falling back to the next:
+# git config xchg.project in the clone; the project whose card names this clone's origin; the name
+# of the main repository (the primary one for a worktree). A clone named differently from the
+# project still gets its mail, and a renamed origin only costs a warning, never the mail.
+CUR_PROJECT=""; CUR_PROJECT_SET=0; CUR_HUB_PROJECTS=""   # resolved once in main: it is asked all over
+# Repository addresses are compared in one spelling: host/path, lower case, without the scheme,
+# login, port and .git. A local path has no host and never matches.
+NORM_REPO_AWK='function norm(u, host, rest) {
+  u = tolower(u); sub(/[ \t\r]+$/, "", u); sub(/\/+$/, "", u); sub(/\.git$/, "", u)
+  if (u ~ /^[a-z][a-z0-9+.-]*:\/\//) { sub(/^[a-z][a-z0-9+.-]*:\/\//, "", u); sub(/^[^\/@]*@/, "", u)
+    if (!match(u, /^[^\/:]+/)) return ""; host = substr(u, 1, RLENGTH); rest = substr(u, RLENGTH + 1); sub(/^:[0-9]*/, "", rest) }
+  else if (u ~ /^[^\/:]+:/) { sub(/^[^\/@:]*@/, "", u); match(u, /^[^\/:]+/); host = substr(u, 1, RLENGTH); rest = substr(u, RLENGTH + 2) }
+  else return ""
+  sub(/^\/+/, "", rest); if (host == "" || rest == "") return ""
+  return host "/" rest
+}'
+norm_repo() { awk -v u="$1" "$NORM_REPO_AWK"'BEGIN { print norm(u) }'; }
+card_repo() { sed -n -E 's/^(Repository|Репозиторий): *//p' "$1" 2>/dev/null | head -1; }
+card_matches() {  # <hub> <normalized origin> -> projects whose card names this repository
+  local d; d="$(hub_path "$1")/projects"; [ -d "$d" ] && [ -n "$2" ] || return 0
+  awk -v want="$2" "$NORM_REPO_AWK"'
+    FNR == 1 { seen = 0 }
+    !seen && sub(/^(Repository|Репозиторий): */, "") { seen = 1; if (norm($0) == want) { n = split(FILENAME, a, "/"); print a[n-1] } }' "$d"/*/README.md 2>/dev/null
+  return 0
+}
+repo_project() {  # the clone's own answer: xchg.project, else the name of the main repository
   local root o; root=$(repo_root) || return 0
   o=$(git -C "$root" config --get xchg.project 2>/dev/null || true)
   echo "${o:-${root##*/}}"
+}
+resolve_projects() {  # fills CUR_PROJECT (the clone's answer) and CUR_HUB_PROJECTS (hub<TAB>project per hub)
+  local root o origin norm h m p card
+  CUR_PROJECT=""; CUR_PROJECT_SET=1; CUR_HUB_PROJECTS=""
+  root=$(repo_root) || return 0
+  o=$(git -C "$root" config --get xchg.project 2>/dev/null || true); CUR_PROJECT="${o:-${root##*/}}"
+  [ -z "$o" ] && [ ${#HUBS[@]} -gt 0 ] || return 0   # pinned: the same project in every hub
+  origin=$(git -C "$root" remote get-url origin 2>/dev/null || true); norm=$(norm_repo "$origin")
+  for h in ${HUBS[@]+"${HUBS[@]}"}; do
+    m=$(card_matches "$h" "$norm"); set -- $m; p="$CUR_PROJECT"   # project names have no spaces
+    if [ $# = 1 ]; then p="$1"
+    elif [ $# -gt 1 ]; then warn "hub $h: projects $(printf '%s, ' "$@" | sed 's/, $//') all name this repository; going by the directory name '$p' (pin one: git config xchg.project <name>)"
+    elif [ -n "$norm" ] && has_project "$h" "$p"; then
+      card=$(norm_repo "$(card_repo "$(hub_path "$h")/projects/$p/README.md")")
+      [ -z "$card" ] || [ "$card" = "$norm" ] || warn "hub $h: the card of project $p names $card, this clone's origin is $norm: update the card (xchg projects add $p --repo <url> --hub $h) or pin the project (git config xchg.project $p)"
+    fi
+    CUR_HUB_PROJECTS="$CUR_HUB_PROJECTS$h	$p
+"
+  done
+}
+cur_project() {  # [hub] -> the session's project in that hub; without a hub, the clone's own answer
+  [ "$CUR_PROJECT_SET" = 1 ] || { repo_project; return 0; }
+  local h p
+  if [ -n "${1:-}" ]; then while IFS='	' read -r h p; do [ "$h" = "$1" ] && { echo "$p"; return 0; }; done <<< "$CUR_HUB_PROJECTS"; fi
+  echo "$CUR_PROJECT"
+}
+project_known() {  # the repository is a project of at least one hub (under whatever name)
+  local h; [ -n "$CUR_PROJECT" ] || return 1
+  for h in ${HUBS[@]+"${HUBS[@]}"}; do has_project "$h" "$(cur_project "$h")" && return 0; done; return 1
+}
+set_card_repo() {  # <README.md> <url>: the Repository line of a card, replaced or added
+  local t; t=$(mktemp)
+  awk -v r="$2" '!d && /^(Repository|Репозиторий): */ { print "Repository: " r; d = 1; next } { print } END { if (!d) print "Repository: " r }' "$1" > "$t" && mv "$t" "$1"
 }
 project_norm() {  # repository name -> valid project name: TRENDS-frontend -> trends-frontend
   printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C sed 's/[^a-z0-9._-]/-/g; s/--*/-/g; s/^-//; s/-$//'
 }
 sender_id() {  # <hub> -> sender signature: user/project, or just user outside a repository
-  local me p; me=$(hub_login "$1"); p=$(cur_project)
+  local me p; me=$(hub_login "$1"); p=$(cur_project "$1")
   { [ -n "$p" ] && has_project "$1" "$p"; } && echo "$me/$p" || echo "$me"
 }
 my_addrs() {  # <hub> -> this session's addresses: the hub, me, my project, my agent
-  local h="$1" me p; me=$(hub_login "$h"); p=$(cur_project)
+  local h="$1" me p; me=$(hub_login "$h"); p=$(cur_project "$h")
   echo all; echo "people/$me"
   if [ -n "$p" ] && has_project "$h" "$p"; then echo "projects/$p"; echo "projects/$p/$me"; fi
 }
 other_addrs() {  # <hub> -> my addresses in other projects (not shown in this session)
-  local h="$1" me p cur d; me=$(hub_login "$h"); cur=$(cur_project)
+  local h="$1" me p cur d; me=$(hub_login "$h"); cur=$(cur_project "$h")
   for d in "$(hub_path "$h")"/projects/*/; do [ -d "$d" ] || continue; p=$(basename "$d")
     [ "$p" = "$cur" ] && continue
     echo "projects/$p"; [ -d "$d$me" ] && echo "projects/$p/$me"; done
   return 0
 }
 cmd_agent() {
-  require_hubs; local h p me n=0; p=$(cur_project)
-  [ -n "$p" ] || die "not in a git repository: an agent is person x project, and the project is unknown here"
-  for h in ${HUBS[@]+"${HUBS[@]}"}; do me=$(hub_login "$h"); has_project "$h" "$p" || continue
+  require_hubs; local h p me n=0
+  [ -n "$CUR_PROJECT" ] || die "not in a git repository: an agent is person x project, and the project is unknown here"
+  for h in ${HUBS[@]+"${HUBS[@]}"}; do me=$(hub_login "$h"); p=$(cur_project "$h"); has_project "$h" "$p" || continue
     echo "$h:@$p:$me"; n=$((n+1)); done
-  [ "$n" -gt 0 ] && return 0
+  [ "$n" -gt 0 ] && return 0; p="$CUR_PROJECT"
   if [[ "$p" =~ $PROJ_RE ]]; then echo "repository '$p' is not a project in any hub (xchg projects add $p)"
   else echo "repository name '$p' is not a valid project name (needs [a-z0-9._-]): xchg projects add $(project_norm "$p") — the name is remembered for this repository"; fi
 }
@@ -422,7 +476,7 @@ msg_files() {  # <directory> -> messages of the address (no card, no subdirector
 kind_of() { case "$(meta kind "$1")" in (task) echo task;; (*) echo message;; esac; }
 # Read marks are per agent: a message to a shared address (all, people/<me>) must be read by every
 # agent of mine, not "whoever reads first closes it for everyone".
-cursor_file() { local key="${2//\//_}" p; p=$(cur_project); echo "$(hub_path "$1")/.git/xchg-read/${p:-shell}--$key"; }
+cursor_file() { local key="${2//\//_}" p; p=$(cur_project "$1"); echo "$(hub_path "$1")/.git/xchg-read/${p:-shell}--$key"; }
 mark_read() {  # <hub> <address> [file|all unread]
   local h="$1" rel="$2" cf d b; cf=$(cursor_file "$h" "$rel"); d="$(hub_path "$h")/$rel"
   mkdir -p "$(dirname "$cf")"; touch "$cf"
@@ -434,12 +488,12 @@ mark_read() {  # <hub> <address> [file|all unread]
 # the whole history of shared addresses as unread: messages older than READ_GRACE are marked read once.
 # Tasks stay open, and the agent's own address is left alone: what was handed over there is for it.
 # The time comes from the name prefix (YYYYmmdd-HHMMSS, UTC), so no file is read to decide.
-baseline_file() { local p; p=$(cur_project); echo "$(hub_path "$1")/.git/xchg-read/${p:-shell}.baseline"; }
+baseline_file() { local p; p=$(cur_project "$1"); echo "$(hub_path "$1")/.git/xchg-read/${p:-shell}.baseline"; }
 utc_stamp() { date -u -d "@$1" +%Y%m%d-%H%M%S 2>/dev/null || date -u -r "$1" +%Y%m%d-%H%M%S; }
 agent_baseline() {  # <hub> -> how many unread messages were marked read (nothing if the agent isn't new)
   local h="$1" bf cut me p own rel d f b n addrs=(); bf=$(baseline_file "$h")
   [ -f "$bf" ] && return 0
-  cut=$(utc_stamp $(( $(now_epoch) - READ_GRACE ))); me=$(hub_login "$h"); p=$(cur_project)
+  cut=$(utc_stamp $(( $(now_epoch) - READ_GRACE ))); me=$(hub_login "$h"); p=$(cur_project "$h")
   own=""; [ -n "$p" ] && own="projects/$p/$me"; d=$(hub_path "$h")
   for rel in $(my_addrs "$h"; other_addrs "$h"); do [ "$rel" != "$own" ] && addrs+=("$rel"); done
   # what the agent would have been shown: unread, unmuted messages older than the cut (tasks stay open anyway)
@@ -462,7 +516,7 @@ baseline_hubs() { local h; for h in "$@"; do agent_baseline "$h"; done; return 0
 # The contact book as this agent knows it: the whole book once (connecting a hub, the agent's first
 # inbox in this clone), after that who joined, left or changed their row. The snapshot is per agent,
 # like the read marks, so every agent of mine is told once. My own row is not news to me.
-contacts_file() { local p; p=$(cur_project); echo "$(hub_path "$1")/.git/xchg-contacts/${p:-shell}"; }
+contacts_file() { local p; p=$(cur_project "$1"); echo "$(hub_path "$1")/.git/xchg-contacts/${p:-shell}"; }
 contacts_rows() {  # <hub> -> "login<TAB>name<TAB>aliases<TAB>contact", one per person
   local c="$(hub_path "$1")/contacts.md"; [ -f "$c" ] || return 0
   awk -F'|' '/^\|/ { for (i=2;i<=5;i++) gsub(/^ +| +$/,"",$i); if ($2=="login"||$2==""||$2~/^-/) next; print $2 "\t" $3 "\t" $4 "\t" $5 }' "$c" | LC_ALL=C sort
@@ -546,7 +600,7 @@ fm == 1 && att == "" && sub(/^attachments: */, "") { att = $0; next }
 END { flush() }'
 scan_addrs() {  # <hub> <scope> <address>... -> inbox lines; scope mine|foreign|"" (how to treat replies in people/<me>)
   local h="$1" scope="$2" d me p who f cf rel args=(); shift 2
-  d=$(hub_path "$h"); me=$(hub_login "$h"); p=$(cur_project); who="${p:-shell}"
+  d=$(hub_path "$h"); me=$(hub_login "$h"); p=$(cur_project "$h"); who="${p:-shell}"
   args=(mode=set set=shown); [ -f "$d/.git/xchg-shown/$who" ] && args+=("$d/.git/xchg-shown/$who")
   args+=(set=others); for f in "$d"/.git/xchg-shown/*; do [ -f "$f" ] && [ "${f##*/}" != "$who" ] && args+=("$f"); done
   args+=(set=muted); [ -f "$d/.git/xchg-muted/$who" ] && args+=("$d/.git/xchg-muted/$who")
@@ -575,7 +629,7 @@ warn_secrets() { grep -qE 'AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|gh[ous]_[A-Za-z
 # A message from a repository that is not a project in the hub is signed with the person alone, so the
 # reply comes to the personal address instead of this agent's.
 warn_no_project() {  # <hub>
-  local p; p=$(cur_project); [ -n "$p" ] || return 0
+  local p; p=$(cur_project "$1"); [ -n "$p" ] || return 0
   has_project "$1" "$p" && return 0
   warn "sent as $(hub_login "$1"), without a project: repository '$p' is not a project in hub $1, so the reply will come to your personal address, not to this agent. Add it: xchg projects add --hub $1"
 }
@@ -601,6 +655,10 @@ hub_filter() { [ -z "${OPT_HUB:-}" ] && { echo ${HUBS[@]+"${HUBS[@]}"}; return; 
 unsent_warn() { local h n; for h in "$@"; do hub_has_remote "$h" || continue
     n=$(git -C "$(hub_path "$h")" rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
     [ "$n" -gt 0 ] && echo "hub $h: $n not sent to origin (xchg sync)"; done; return 0; }
+no_project_note() {  # the repository is a project nowhere: its project addresses can't be checked, say so
+  [ -n "$CUR_PROJECT" ] && ! project_known || return 0
+  echo "xchg: repository '$CUR_PROJECT' is not a project in any hub, so mail to its project addresses is not checked (xchg projects add)"
+}
 others_note() {  # <hub...> -> count of messages in my other projects (muted ones not counted)
   [ "$SHOW_ALL" = 1 ] && return 0
   local h lines n
@@ -621,7 +679,7 @@ cmd_inbox() {
     *) udie "inbox [--brief] [--all] [--history] [--max-age N] [--hub H] [--hook-format F] [--session]";; esac; done
   if [ ${#HUBS[@]} -eq 0 ]; then [ "$brief" = 1 ] && return 0; require_hubs; fi
   local hubs; hubs=$(hub_filter); sync_hubs $hubs
-  local out others unsent n mode=new base book; base=$(baseline_hubs $hubs); book=$(contacts_notes $hubs)
+  local out others unsent np n mode=new base book; base=$(baseline_hubs $hubs); book=$(contacts_notes $hubs)
   if [ "$brief" = 1 ]; then
     # Hook: on session start, everything open (a new session doesn't remember the backlog); otherwise only
     # what this agent hasn't been shown yet, or the same lines would enter the context on every prompt.
@@ -631,7 +689,7 @@ cmd_inbox() {
     [ "$mode" = new ] && UNSHOWN=1
     out=$(inbox_lines $hubs)
     record_shown "$out"
-    others=$(others_note $hubs); unsent=$(unsent_warn $hubs)
+    others=$(others_note $hubs); unsent=$(unsent_warn $hubs); np=""; [ "$mode" = all ] && np=$(no_project_note)
     n=$(printf '%s' "$out" | grep -c . || true)
     local text; text=$(
       if [ "$n" -gt 0 ]; then
@@ -639,14 +697,14 @@ cmd_inbox() {
         else echo "xchg: $n new $(plural "$n" message messages) (xchg inbox):"; fi
         echo "$out"
       fi
-      [ -n "$base" ] && echo "$base"; [ -n "$book" ] && echo "$book"; [ -n "$others" ] && echo "$others"; [ -n "$unsent" ] && echo "$unsent"; true)
+      [ -n "$base" ] && echo "$base"; [ -n "$book" ] && echo "$book"; [ -n "$others" ] && echo "$others"; [ -n "$np" ] && echo "$np"; [ -n "$unsent" ] && echo "$unsent"; true)
     hook_print "$text"; return 0
   fi
   out=$(inbox_lines $hubs)
   record_shown "$out"
-  others=$(others_note $hubs); unsent=$(unsent_warn $hubs)
+  others=$(others_note $hubs); unsent=$(unsent_warn $hubs); np=$(no_project_note)
   [ -n "$out" ] && echo "$out" || echo "no new messages"
-  [ -n "$base" ] && echo "$base"; [ -n "$book" ] && echo "$book"; [ -n "$others" ] && echo "$others"; [ -n "$unsent" ] && echo "$unsent"; return 0
+  [ -n "$base" ] && echo "$base"; [ -n "$book" ] && echo "$book"; [ -n "$others" ] && echo "$others"; [ -n "$np" ] && echo "$np"; [ -n "$unsent" ] && echo "$unsent"; return 0
 }
 # --- attachments -------------------------------------------------------------------------------
 # A file travels as a root commit holding only that file, under refs/xchg/att/<blob hash>. A normal
@@ -739,7 +797,7 @@ inbox_lines() {  # <hub...> -> inbox lines for this session's addresses (with --
 # "Shown" is what this agent has already seen: a hook, inbox, a previous wait. wait wakes only on
 # the unshown, otherwise an open task or one's own message would wake the agent again and again.
 # The key is the file name: claim and done move the file but keep its name.
-shown_file() { local p; p=$(cur_project); echo "$(hub_path "$1")/.git/xchg-shown/${p:-shell}"; }
+shown_file() { local p; p=$(cur_project "$1"); echo "$(hub_path "$1")/.git/xchg-shown/${p:-shell}"; }
 mark_shown() {  # <hub> <file name>...
   local h="$1" f x; f=$(shown_file "$h"); shift; mkdir -p "$(dirname "$f")"
   { if [ -f "$f" ]; then cat "$f"; fi; for x in "$@"; do echo "$x"; done; } | sort -u > "$f.tmp" && mv "$f.tmp" "$f"
@@ -787,7 +845,7 @@ hook_print() {  # <text>
 }
 # "Muted" is a message not for this agent: don't show it and don't wake the agent. The mark is local and
 # per agent; nothing changes in the hub. The key is the file name, as for "shown".
-muted_file() { local p; p=$(cur_project); echo "$(hub_path "$1")/.git/xchg-muted/${p:-shell}"; }
+muted_file() { local p; p=$(cur_project "$1"); echo "$(hub_path "$1")/.git/xchg-muted/${p:-shell}"; }
 set_muted() {  # <hub> <on|off> <file name>
   local h="$1" mode="$2" name="$3" f; f=$(muted_file "$h"); mkdir -p "$(dirname "$f")"
   { if [ -f "$f" ]; then cat "$f"; fi; if [ "$mode" = on ]; then echo "$name"; fi; } |
@@ -795,9 +853,10 @@ set_muted() {  # <hub> <on|off> <file name>
 }
 cmd_mute() {
   require_hubs; [ $# -gt 0 ] || udie "mute <file>..."
-  local a d who; who=$(cur_project); who="${who:-shell}"
+  local a d who
   for a in "$@"; do
     locate "$a"; d="$(hub_path "$L_HUB")"; [ -f "$d/$L_REL" ] || die "no file $L_HUB:$L_REL"
+    who=$(cur_project "$L_HUB"); who="${who:-shell}"
     set_muted "$L_HUB" on "$(basename "$L_REL")"; mark_shown "$L_HUB" "$(basename "$L_REL")"
     if [ "$(kind_of "$d/$L_REL")" != task ]; then mark_read "$L_HUB" "$(dirname "$L_REL")" "$L_REL"; fi
     echo "muted for agent @$who: $L_HUB:$L_REL"
@@ -934,7 +993,7 @@ cmd_claim() {  # take a task: the file moves to my agent's address
   case "$rel" in
     projects/*/*/*) die "the task is already with an agent ($(addr_label "$h" "$(dirname "$rel")"))";;
     projects/*) p=$(echo "$rel" | cut -d/ -f2);;
-    *) p=$(cur_project); [ -n "$p" ] && has_project "$h" "$p" || die "to claim a task, run inside a repository that is a project of this hub";;
+    *) p=$(cur_project "$h"); [ -n "$p" ] && has_project "$h" "$p" || die "to claim a task, run inside a repository that is a project of this hub";;
   esac
   dst="projects/$p/$me/$b"; check_contract "$h"
   mkdir -p "$d/projects/$p/$me"; git -C "$d" mv "$rel" "$dst"
@@ -1056,16 +1115,17 @@ project_card() {  # <README.md> <project> -> where the code is; hubs created by 
 cmd_projects() {
   require_hubs
   local sub="${1:-}"; case "$sub" in add) shift; cmd_project_add "$@"; return $?;; --hub) OPT_HUB="$2";; esac
-  local hubs h p cur; hubs=$(hub_filter); sync_hubs $hubs; cur=$(cur_project)
+  local hubs h p; hubs=$(hub_filter); sync_hubs $hubs
   for h in $hubs; do for p in "$(hub_path "$h")"/projects/*/; do [ -d "$p" ] || continue; p=$(basename "$p")
-    printf '%-8s %-16s %-5s %s\n' "$h" "$p" "$([ "$p" = "$cur" ] && echo here || echo '')" "$(project_card "$(hub_path "$h")/projects/$p/README.md" "$p")"
+    printf '%-8s %-16s %-5s %s\n' "$h" "$p" "$([ "$p" = "$(cur_project "$h")" ] && echo here || echo '')" "$(project_card "$(hub_path "$h")/projects/$p/README.md" "$p")"
   done; done; return 0
 }
 cmd_project_add() {
   require_hubs; local name="${1:-}" repo="" owner=""
   case "$name" in --*|"") name="";; *) shift;; esac   # the name is optional: without it, the current repository
   while [ $# -gt 0 ]; do case "$1" in --repo) repo="$2"; shift 2;; --owner) owner="$2"; shift 2;; --hub) OPT_HUB="$2"; shift 2;; *) udie "projects add <name> [--repo <where the code is>] [--owner login] [--hub H]";; esac; done
-  local from_repo=0 root; [ -n "$name" ] || { name=$(cur_project); from_repo=1; }
+  local h; h="${OPT_HUB:-$(default_hub)}"; is_hub "$h" || die "no hub '$h'"
+  local from_repo=0 root; [ -n "$name" ] || { name=$(cur_project "$h"); from_repo=1; }
   [ -n "$name" ] || udie "projects add: not in a git repository, give a project name"
   if ! [[ "$name" =~ $PROJ_RE ]]; then
     [ "$from_repo" = 1 ] && udie "repository name '$name' is not a valid project name (needs [a-z0-9._-]). Add it like this: xchg projects add $(project_norm "$name") — the name is remembered for this repository (git config xchg.project)"
@@ -1076,12 +1136,15 @@ cmd_project_add() {
      && ! [[ "$(basename "$root")" =~ $PROJ_RE ]]; then
     git -C "$root" config xchg.project "$name"; CUR_PROJECT="$name"; echo "repository ${root##*/} is now project '$name' (git config xchg.project)"
   fi
-  local h; h="${OPT_HUB:-$(default_hub)}"; is_hub "$h" || die "no hub '$h'"
   sync_hubs "$h"; check_contract "$h"
   local d="$(hub_path "$h")" pd="projects/$name"
   [ -n "$repo" ] || repo=$(git remote get-url origin 2>/dev/null || true)
   repo=$(printf '%s' "$repo" | strip_creds)   # the card says where the code is, never how to log in
-  if [ -d "$d/$pd" ]; then echo "project $name already exists in hub $h"
+  if [ -d "$d/$pd" ]; then
+    if [ -n "$repo" ] && [ "$(card_repo "$d/$pd/README.md")" != "$repo" ]; then   # the code moved: the card follows
+      set_card_repo "$d/$pd/README.md" "$repo"; git -C "$d" add "$pd/README.md"
+      hub_push "$h" "[xchg] project $name: repository $repo" || true; echo "project $name: the card now names $repo"
+    else echo "project $name already exists in hub $h"; fi
   else
     mkdir -p "$d/$pd"; [ -n "$owner" ] || owner=$(hub_login "$h")
     { printf '# %s\n\n' "$name"
@@ -1393,7 +1456,7 @@ H
 main() {
   OPT_HUB="${XCHG_HUB:-}"
   case "${1:-help}" in help|-h|--help) cmd_help; exit 0;; version) cmd_version; exit 0;; esac
-  load_conf; CUR_PROJECT=$(cur_project); CUR_PROJECT_SET=1
+  load_conf; resolve_projects
   case "${1:-help}" in
     wait) shift; cmd_wait "$@";;
     mute) shift; cmd_mute "$@";;

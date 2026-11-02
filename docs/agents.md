@@ -8,13 +8,20 @@ An agent is a coding agent session in a specific repository, run by a specific p
 name: its address is made of the project and the person, so `@api:alice` and `alice:@api` are one
 and the same mailbox.
 
-The current session's project is the name of the main repository (for a worktree, the primary
-repository is used, not the working copy). If the clone is named differently from the project in
-the hub, the repository says so itself:
+The current session's project is found per hub, in this order, each step falling back to the next:
 
-```bash
-git config xchg.project api
-```
+1. `git config xchg.project` in the clone — an explicit choice, the same in every hub.
+2. The project whose card names this clone's `origin`. Addresses are compared without the scheme,
+   login, port and `.git`, so `git@github.com:team/api.git` and `https://github.com/team/api` are one
+   repository. A clone may be named anything: `~/src/api-fork` with the right `origin` is project `api`.
+3. The name of the main repository (for a worktree, the primary repository, not the working copy).
+   If that project's card names another repository, the client warns on stderr and still uses the
+   project: after the code moved, update the card (`xchg projects add api --repo <url>`) or pin the
+   project with `git config xchg.project api`. If several cards in one hub name the same repository,
+   the client also falls back to the directory name and asks you to pin one.
+
+Outside any of these — the repository is a project of no hub — `xchg inbox` and the session-start
+hook say so in one line, because mail to the project's addresses is not being checked.
 
 A project name is only `[a-z0-9._-]`. If the repository is named otherwise (for example,
 `TRENDS-frontend`), `xchg projects add` without a name suggests a normalized one, and

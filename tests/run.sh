@@ -687,6 +687,35 @@ assert_contains "$OUT" "is now project 'trends-frontend'"
 assert_eq "$(git -C "$SB/repos/TRENDS-Frontend" config xchg.project)" trends-frontend "the name is remembered in the repository"
 run in_tf "$X" agent; assert_eq "$OUT" "work:@trends-frontend:alice" "the agent is addressable under the new name"
 
+t "the project is found by origin, then by the directory name"
+mkdir -p "$SB/repos/api-fork"; git init -q "$SB/repos/api-fork"; git -C "$SB/repos/api-fork" remote add origin "https://alice:TOKEN@EXAMPLE.com/team/api.git"
+in_af() { ( cd "$SB/repos/api-fork" && "$X" "$@" ); }
+run in_af agent; assert_eq "$RC" 0 "agent in a clone named differently"; assert_eq "$OUT" "work:@api:alice" "found by origin: the clone name is not a project anywhere"
+run in_web "$X" send work:@api by-origin <<< '# Found by origin'; assert_eq "$RC" 0 "a task to the project"
+run in_af inbox; assert_contains "$OUT" "Found by origin"; assert_not_contains "$OUT" "is not a project in any hub"
+run in_af projects; assert_contains "$OUT" "api              here"
+git -C "$SB/repos/api-fork" config xchg.project web
+run in_af agent; assert_contains "$OUT" "work:@web:alice"; assert_not_contains "$OUT" "@api"; ok "git config xchg.project wins over origin"
+git -C "$SB/repos/api-fork" config --unset xchg.project
+mkdir -p "$SB/moved/web"; git init -q "$SB/moved/web"; git -C "$SB/moved/web" remote add origin git@example.com:other/web.git
+in_mw() { ( cd "$SB/moved/web" && "$X" "$@" ); }
+run in_mw agent; assert_eq "$RC" 0 "agent in a clone whose origin differs from the card"
+assert_contains "$OUT" "work:@web:alice"; ok "the directory name still wins the mail"
+assert_contains "$OUT" "the card of project web names example.com/team/web, this clone's origin is example.com/other/web"
+assert_contains "$OUT" "xchg projects add web --repo"
+run in_mw projects add web --repo git@example.com:other/web.git --hub work; assert_eq "$RC" 0 "projects add --repo on an existing project"
+assert_contains "$OUT" "the card now names git@example.com:other/web.git"
+assert_eq "$(sed -n 's/^Repository: //p' "$H/exchange/work/projects/web/README.md")" "git@example.com:other/web.git" "the card is updated"
+assert_eq "$(git -C "$H/exchange/work" log -1 --format=%s)" "[xchg] project web: repository git@example.com:other/web.git" "and pushed"
+run in_mw agent; assert_not_contains "$OUT" "the card of project"; ok "no warning once the card follows the code"
+run in_mw projects add web --hub work; assert_contains "$OUT" "already exists"; ok "without --repo the card is left alone"
+run in_web "$X" projects add api2 --repo https://example.com/team/api.git --hub work; assert_eq "$RC" 0 "a second card naming the same repository"
+run in_af agent; assert_contains "$OUT" "projects api, api2 all name this repository; going by the directory name 'api-fork'"
+assert_contains "$OUT" "repository 'api-fork' is not a project in any hub"; ok "ambiguous cards: the directory name decides, and it asks to pin"
+run in_tool inbox; assert_contains "$OUT" "repository 'tool' is not a project in any hub, so mail to its project addresses is not checked (xchg projects add)"
+run hook SessionStart in_tool inbox --brief; assert_contains "$OUT" "repository 'tool' is not a project in any hub"
+run hook UserPromptSubmit in_tool inbox --brief --max-age 300; assert_not_contains "$OUT" "not a project"; ok "the prompt hook stays silent about it"
+
 t "config errors"
 printf 'default = a\n[hub a]\npath = /tmp/a\nbogus line\n' > "$H/.config/xchg/xchg.conf"
 run "$X" hubs; assert_eq "$RC" 1 "a bad line is an error"; assert_contains "$OUT" "xchg.conf:4: cannot parse"
