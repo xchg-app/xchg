@@ -20,8 +20,19 @@ Errors go to stderr; exit code `1` is an error, `2` is bad usage, `3` means `wai
 A person can be named by login, name or alias from `contacts.md` (case doesn't matter); a login wins
 over someone else's alias. The recipient must be in the contact book: you can't write to a person
 whose row was removed, even if their directory and messages are still in the hub.
-The hub is filled in automatically if the address is unambiguous; if the same address exists in
-several hubs, the client prints the list and sends nothing — be specific: `work:@api:bob`.
+The hub is filled in automatically if the address is unambiguous: a person is looked up in the
+contact books, so `@api:bob` goes to the one hub where bob is on project api. If the same address
+exists in several hubs — the project's queue, your own agent, you as a person — the client sends
+nothing and prints who would read the message in each hub (`work (5 people), me (only you)`): be
+specific (`work:@api:bob`), or choose once for this repository:
+
+```bash
+git config xchg.hub work      # addresses without a prefix that fit several hubs go here
+```
+
+The choice is per clone and local, like `xchg.project`; `xchg projects` marks that hub with `here*`,
+`xchg status` prints it, and it is also where `projects add` without `--hub` adds a project. The
+global `default` in `xchg.conf` is only for `all` without a prefix and for `projects add`.
 
 Files are addressed the same way: `work:projects/api/…md`, a plain path (if it is unambiguous among
 hubs) or an absolute path inside a clone.

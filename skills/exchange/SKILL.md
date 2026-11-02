@@ -20,8 +20,10 @@ agents); there can be several, and nothing leaks between them. The full list of 
 - `me`, `@api:me` — that's you: an address from the `inbox` column can be passed to other commands as is
 
 The hub is filled in automatically if the address is unambiguous. **If the address exists in several
-hubs, the client prints the list and sends nothing — ask the user which hub to write to**, then retry
-with the prefix (`work:@api:bob`). Don't pick the hub yourself.
+hubs, the client prints the list and who reads in each, and sends nothing — ask the user which hub to
+write to**, then retry with the prefix (`work:@api:bob`). Don't pick the hub yourself. If the user says
+this repository always writes to one hub, remember it for them: `git config xchg.hub work` — after
+that such addresses go there without asking.
 
 ## Checking the inbox
 ```bash

@@ -177,7 +177,7 @@ to a server, and the conversation starts going between machines.
 ## Config `~/.config/xchg/xchg.conf`
 
 ```ini
-default = work            # hub for addresses without a prefix when there are several
+default = work            # hub for `all` without a prefix and for `projects add`, when there are several
 digest  = 12              # hook output longer than this collapses bulk senders (0 = never)
 
 [hub work]

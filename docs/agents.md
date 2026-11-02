@@ -39,6 +39,10 @@ me:@api:alice
 All sessions, worktrees and machines over one repository are one recipient: a message is picked up
 by whichever session starts first.
 
+A repository that is a project in several hubs (the team's and your own) writes to one of them by
+default: `git config xchg.hub work`. Without it, an address that fits several hubs is refused with the
+list — see [cli.md](cli.md#addresses).
+
 ## A repository becomes a project
 
 Until a repository is added as a project, the agent in it can't be addressed:

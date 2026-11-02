@@ -478,7 +478,7 @@ run in_tool inbox; assert_contains "$OUT" "Answer for tool"; ok "the agent that 
 
 t "second hub: my own agents between themselves"
 run "$X" hub init me --login alice; assert_eq "$RC" 0 "personal hub"
-run in_api "$X" seen me; assert_eq "$RC" 1 "me in two hubs is ambiguous"; assert_contains "$OUT" "exists in hubs: work me"
+run in_api "$X" seen me; assert_eq "$RC" 1 "me in two hubs is ambiguous"; assert_contains "$OUT" "exists in hubs: work (4 people), me (only you)"
 run in_api "$X" seen work:me; assert_eq "$RC" 0 "with a hub prefix it is unambiguous"; assert_contains "$OUT" "read: work:alice"
 run in_api "$X" projects add api --hub me; assert_eq "$RC" 0 "project api in the personal hub"
 run in_web "$X" projects add web --hub me; assert_eq "$RC" 0 "project web in the personal hub"
@@ -486,7 +486,7 @@ run in_api "$X" send me:@web:alice handoff <<< '# Continue the migration'; asser
 assert_contains "$OUT" "sent: me:projects/web/alice/"
 run in_web "$X" inbox; assert_contains "$OUT" "Continue the migration"; assert_contains "$OUT" "me"
 run in_api "$X" inbox; assert_not_contains "$OUT" "Continue the migration"; ok "another address isn't shown in this session"
-run in_api "$X" send @api:alice self <<< '# A note to self'; assert_contains "$OUT" "exists in hubs: work me"
+run in_api "$X" send @api:alice self <<< '# A note to self'; assert_contains "$OUT" "exists in hubs: work (4 people), me (only you)"
 ok "the same address in two hubs is an error with a list"
 run in_api "$X" send me:@api:alice self <<< '# A note to self'; assert_eq "$RC" 0 "a hub prefix resolves the ambiguity"
 
@@ -745,6 +745,23 @@ run hook SessionStart in_api "$X" inbox --brief --hook-format text; assert_conta
 sed -i.bak 's/^digest = 0$/digest = many/' "$CONFF"
 run in_api "$X" inbox; assert_eq "$RC" 1 "a bad digest value is a config error"; assert_contains "$OUT" "digest = many, but it must be a number"
 sed -i.bak '/^digest = many$/d' "$CONFF"
+
+t "a repository in two hubs: the refusal names the audience, git config xchg.hub decides"
+run "$X" hub init own --login alice; assert_eq "$RC" 0 "a hub of my own"
+run in_api "$X" projects add api --hub own; assert_eq "$RC" 0 "the same project in the second hub"
+run in_api "$X" send @api:alice handoff <<< '# To myself'; assert_eq "$RC" 1 "an address that fits two hubs is refused"
+assert_contains "$OUT" "exists in hubs: work ("; assert_contains "$OUT" " people), own (only you)"; assert_contains "$OUT" "git config xchg.hub work"
+run in_api "$X" send @api:bob fine <<< '# Bob is in work only'; assert_eq "$RC" 0 "a colleague's address is unambiguous by the contact book"
+git -C "$SB/repos/api" config xchg.hub own
+run in_api "$X" send @api:alice handoff <<< '# To myself'; assert_eq "$RC" 0 "with xchg.hub the address goes through"; assert_contains "$OUT" "sent: own:projects/api/alice/"
+run in_api "$X" send work:@api:alice handoff2 <<< '# Explicit'; assert_contains "$OUT" "sent: work:projects/api/alice/"; ok "a prefix still wins"
+run in_api "$X" projects; assert_contains "$OUT" "own      api              here*"; assert_not_contains "$OUT" "work     api              here*"
+run in_api "$X" status; assert_contains "$OUT" "hub for this repository: own"
+run in_api "$X" projects add extra; assert_eq "$RC" 0 "projects add without --hub"; assert_contains "$OUT" "project added: own:projects/extra"
+git -C "$SB/repos/api" config xchg.hub nowhere
+run in_api "$X" send @api:alice handoff <<< '# To myself'; assert_eq "$RC" 1 "an unknown xchg.hub is ignored"; assert_contains "$OUT" "xchg.hub = nowhere, but there is no such hub"; assert_contains "$OUT" "exists in hubs:"
+git -C "$SB/repos/api" config --unset xchg.hub
+run "$X" hub rm own >/dev/null
 
 t "config errors"
 printf 'default = a\n[hub a]\npath = /tmp/a\nbogus line\n' > "$H/.config/xchg/xchg.conf"

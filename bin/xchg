@@ -122,7 +122,12 @@ hub_has_remote() { git -C "$(hub_path "$1")" remote get-url origin >/dev/null 2>
 hub_contract() { grep -m1 -E '^contract: *[0-9]+' "$(hub_path "$1")/README.md" 2>/dev/null | sed -E 's/^contract: *//' || true; }
 check_contract() { local c; c=$(hub_contract "$1"); c="${c:-0}"
   [ "$c" = "$XCHG_CONTRACT" ] || die "hub $1: contract $c, this client understands $XCHG_CONTRACT (xchg version)"; }
+hub_audience() {  # <hub>... -> "work (5 people), me (only you)": who would read a message there
+  local h n out=""; for h in "$@"; do n=$(contacts_rows "$h" | grep -c . || true)
+    out="$out${out:+, }$h ($([ "$n" -le 1 ] && echo "only you" || echo "$n people"))"; done; printf '%s' "$out"
+}
 default_hub() {
+  [ -n "$CUR_HUB" ] && { echo "$CUR_HUB"; return; }
   [ -n "$CFG_DEFAULT" ] && { echo "$CFG_DEFAULT"; return; }
   [ ${#HUBS[@]} -eq 1 ] && { echo "${HUBS[0]}"; return; }
   die "several hubs (${HUBS[*]-}): add a hub: prefix or set default = <hub> in $CONF"
@@ -340,7 +345,8 @@ parse_addr() {  # <[hub:]part[:part]> -> A_HUB A_REL A_LABEL
       0) [ -n "$p" ] && [ -z "$u" ] && die "no project '$p' in any hub (add it: xchg projects add $p)"
          for h in ${HUBS[@]+"${HUBS[@]}"}; do user_gone "$h" "$u" && die "'$u' is no longer in hub $h (xchg who --hub $h)"; done
          die "recipient '$u' not found in any hub (xchg who)";;
-      *) die "'$spec' exists in hubs: ${hits[*]} — be specific, e.g. ${hits[0]}:$spec";;
+      *) if [ -n "$CUR_HUB" ] && printf '%s\n' "${hits[@]}" | grep -qx -- "$CUR_HUB"; then hub="$CUR_HUB"
+         else die "'$spec' exists in hubs: $(hub_audience "${hits[@]}") — be specific (${hits[0]}:$spec), or choose once for this repository: git config xchg.hub ${hits[0]}"; fi;;
     esac
   fi
   if [ -n "$u" ]; then
@@ -379,6 +385,7 @@ repo_root() {  # root of the main repository (the primary one for a worktree); e
 # of the main repository (the primary one for a worktree). A clone named differently from the
 # project still gets its mail, and a renamed origin only costs a warning, never the mail.
 CUR_PROJECT=""; CUR_PROJECT_SET=0; CUR_HUB_PROJECTS=""   # resolved once in main: it is asked all over
+CUR_HUB=""   # git config xchg.hub: the hub this clone writes to when an address without a prefix fits several
 # Repository addresses are compared in one spelling: host/path, lower case, without the scheme,
 # login, port and .git. A local path has no host and never matches.
 NORM_REPO_AWK='function norm(u, host, rest) {
@@ -409,6 +416,8 @@ resolve_projects() {  # fills CUR_PROJECT (the clone's answer) and CUR_HUB_PROJE
   CUR_PROJECT=""; CUR_PROJECT_SET=1; CUR_HUB_PROJECTS=""
   root=$(repo_root) || return 0
   o=$(git -C "$root" config --get xchg.project 2>/dev/null || true); CUR_PROJECT="${o:-${root##*/}}"
+  CUR_HUB=$(git -C "$root" config --get xchg.hub 2>/dev/null || true)
+  if [ -n "$CUR_HUB" ] && ! is_hub "$CUR_HUB"; then warn "git config xchg.hub = $CUR_HUB, but there is no such hub (xchg hubs); ignored"; CUR_HUB=""; fi
   [ -z "$o" ] && [ ${#HUBS[@]} -gt 0 ] || return 0   # pinned: the same project in every hub
   origin=$(git -C "$root" remote get-url origin 2>/dev/null || true); norm=$(norm_repo "$origin")
   for h in ${HUBS[@]+"${HUBS[@]}"}; do
@@ -1137,7 +1146,7 @@ cmd_projects() {
   local sub="${1:-}"; case "$sub" in add) shift; cmd_project_add "$@"; return $?;; --hub) OPT_HUB="$2";; esac
   local hubs h p; hubs=$(hub_filter); sync_hubs $hubs
   for h in $hubs; do for p in "$(hub_path "$h")"/projects/*/; do [ -d "$p" ] || continue; p=$(basename "$p")
-    printf '%-8s %-16s %-5s %s\n' "$h" "$p" "$([ "$p" = "$(cur_project "$h")" ] && echo here || echo '')" "$(project_card "$(hub_path "$h")/projects/$p/README.md" "$p")"
+    printf '%-8s %-16s %-5s %s\n' "$h" "$p" "$([ "$p" = "$(cur_project "$h")" ] && echo "here$([ "$h" = "$CUR_HUB" ] && echo '*')" || echo '')" "$(project_card "$(hub_path "$h")/projects/$p/README.md" "$p")"
   done; done; return 0
 }
 cmd_project_add() {
@@ -1411,7 +1420,7 @@ cmd_install() {
 }
 cmd_status() {
   echo "xchg $(cmd_version)  ($XCHG_ROOT, contract $XCHG_CONTRACT, $([ "$PLUGIN_MODE" = 1 ] && echo 'harness package' || echo 'standalone install'))"
-  echo "config: $CONF ($CONF_MODE); default: ${CFG_DEFAULT:--}; project here: $(cur_project 2>/dev/null || echo '-')"
+  echo "config: $CONF ($CONF_MODE); default: ${CFG_DEFAULT:--}; project here: $(cur_project 2>/dev/null || echo '-'); hub for this repository: ${CUR_HUB:--}"
   local h d st ahead; for h in ${HUBS[@]+"${HUBS[@]}"}; do d="$(hub_path "$h")"
     if [ -d "$d/.git" ]; then st="synced $([ -f "$d/.git/xchg-last-sync" ] && echo "$(rel_time "$(cat "$d/.git/xchg-last-sync")") ago" || echo never)"
       ahead=$(git -C "$d" rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0); [ "$ahead" != 0 ] && st="$st, not pushed: $ahead"
