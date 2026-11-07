@@ -372,7 +372,15 @@ run in_api "$X" thread "$R"; assert_contains "$OUT" "Personal request"; assert_c
 assert_not_contains "$OUT" "syntax error"; assert_eq "$(awk '/Personal request/ {print $3}' <<< "$OUT")" "open" "status of an open task"
 run in_api "$X" done "$P" ; run in_api "$X" thread "$R"
 assert_not_contains "$OUT" "syntax error"; assert_eq "$(awk '/Personal request/ {print $3}' <<< "$OUT")" "closed" "a closed task is read from history"
-run in_api "$X" sent; assert_contains "$OUT" "projects/api/bob/"; assert_contains "$OUT" "Done it"
+T1=$(ls "$H/exchange/work/projects/api/bob/"*task1.md)
+run in_api "$X" reply "$T1" ping <<< '# Any news?'   # the sender's own follow-up is not an answer
+run in_api "$X" sent; assert_eq "$(awk '/A task for Bob/ {print $4}' <<< "$OUT")" "waiting" "an unanswered task waits"
+assert_not_contains "$OUT" "Done it"; assert_not_contains "$OUT" "Release 2.3"; ok "sent lists tasks only, not messages"
+git -C "$W2" pull -q
+printf -- '---\nfrom: bob/api\nto: @api:alice\nkind: message\ndate: 2026-09-09T12:00:00Z\nre: %s\n---\n# Task1 is done\n' "$(basename "$T1")" > "$W2/projects/api/alice/20260909-120000_bob-api_task1-done.md"
+( cd "$W2" && git add -A && git commit -qm task1-done && git push -q )
+run in_api "$X" sent; assert_eq "$(awk '/A task for Bob/ {print $4}' <<< "$OUT")" "replied" "the recipient's answer marks the task replied"
+assert_contains "$OUT" "xchg done"; ok "sent separates answered tasks and says how to close them"
 run in_api "$X" reply "$R" again <<< '# Forgot to say'; assert_eq "$RC" 0 "reply to my own message"
 assert_contains "$OUT" "sent: work:projects/api/bob/"; ok "a reply to my own message goes on to its recipient, not back to me"
 R3=$(ls -t "$H/exchange/work/projects/api/bob/"*again.md | head -1); assert_contains "$(cat "$R3")" "re: $(basename "$R")"

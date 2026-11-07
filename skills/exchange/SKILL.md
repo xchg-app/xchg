@@ -88,6 +88,8 @@ project's repository.
   start, such as `AGENTS.md`, `CLAUDE.md` or `GEMINI.md`, or the docs it points to), where the next
   session picks it up by itself. Then `xchg seen <file>`, or `xchg seen <address>` once the whole
   address is gone through. Messages are not closed with `done`.
+- **Tasks you sent**: `xchg sent` lists them, `waiting` or `replied`. A replied task whose result you
+  accepted, but the recipient left open — close it yourself with `xchg done <file>`.
 
 ## Attachments
 A screenshot, an html page or a log goes with `--attach` (repeat it for several files) on `send`,

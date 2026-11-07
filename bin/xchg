@@ -931,14 +931,25 @@ cmd_seen() {  # mark messages as read: a whole address, one file or all my addre
   if [ -e "$target" ] || [[ "$target" == *.md ]]; then locate "$target"; mark_read "$L_HUB" "$(dirname "$L_REL")" "$L_REL"; echo "read: $L_HUB:$L_REL"; return 0; fi
   parse_addr "$target"; sync_hubs "$A_HUB"; mark_read "$A_HUB" "$A_REL"; echo "read: $A_HUB:$A_LABEL"
 }
-cmd_sent() {  # my messages that are still open
-  require_hubs; local hubs h me f from n=0; hubs=$(hub_filter); sync_hubs $hubs
-  for h in $hubs; do me=$(hub_login "$h")
-    while IFS= read -r f; do from=$(meta from "$f"); case "$from" in "$me"|"$me"/*) ;; *) continue;; esac
-      printf '%-8s %-44s %-12s %s\n' "$h" "${f#$(hub_path "$h")/}" "$(meta to "$f")" "$(title "$f")"; n=$((n+1))
-    done < <(find "$(hub_path "$h")" -name '*.md' -not -name README.md -not -path '*/.git/*' -not -path '*/done/*' -type f 2>/dev/null | sort)
+cmd_sent() {  # my open tasks; a task the recipient has answered is "replied", the rest "waiting"
+  require_hubs; local hubs h d me f from n=0 st replies wait="" rep=""; hubs=$(hub_filter); sync_hubs $hubs
+  for h in $hubs; do me=$(hub_login "$h"); d=$(hub_path "$h")
+    # "<re><TAB><from>" of every message that answers something, open or closed
+    replies=$(find "$d" -name '*.md' -not -name README.md -not -path '*/.git/*' -type f -exec awk '
+      FNR==1 { fm=0; re=""; fr=""; if ($0 != "---") nextfile } /^---$/ { if (++fm == 2) { if (re != "") print re "\t" fr; nextfile } next }
+      fm==1 && sub(/^re: */, "") { re=$0 } fm==1 && sub(/^from: */, "") { fr=$0 }' {} + 2>/dev/null)
+    while IFS= read -r f; do [ "$(kind_of "$f")" = task ] || continue
+      from=$(meta from "$f"); case "$from" in "$me"|"$me"/*) ;; *) continue;; esac
+      # an answer from the sender's own signature is a follow-up, not the recipient's reply
+      if printf '%s\n' "$replies" | awk -F'\t' -v b="$(basename "$f")" -v s="$from" '$1==b && $2!=s {x=1} END {exit !x}'
+      then st=replied; else st=waiting; fi
+      f=$(printf '%-8s %-44s %-12s %-8s %s' "$h" "${f#$d/}" "$(meta to "$f")" "$st" "$(title "$f")")
+      if [ "$st" = waiting ]; then wait="$wait$f"$'\n'; else rep="$rep$f"$'\n'; fi; n=$((n+1))
+    done < <(find "$d" -name '*.md' -not -name README.md -not -path '*/.git/*' -not -path '*/done/*' -type f 2>/dev/null | sort)
   done
-  [ "$n" -gt 0 ] || echo "everything I sent is closed or read"
+  [ "$n" -gt 0 ] || { echo "no open tasks of mine"; return 0; }
+  printf "%s%s" "$wait" "$rep"
+  [ -z "$rep" ] || echo "replied: the recipient answered; once the result is accepted, close it yourself: xchg done <file>"
 }
 hist_find() {  # <hub> <file name> -> "commit<TAB>path" of the commit that added it
   git -C "$(hub_path "$1")" log --diff-filter=A --format='c %H' --name-only -- "*/$2" 2>/dev/null |
@@ -1467,7 +1478,7 @@ Address: [hub:]part[:part] — all | @project | person | @project:person (part o
   done <file>                               close a task (moves to done/)
   seen [address|file]                       mark messages as read
   mute <file>...                            not mine: don't show it or wake this agent
-  sent                                      my messages that are still open
+  sent                                      my open tasks: waiting, or replied to
   thread <file>                             the conversation by re:, including closed ones
   forward <file> <address> [--note '...']   forward to another hub
   who [query] [--hub H]                     hub contacts

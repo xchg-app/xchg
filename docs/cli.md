@@ -78,7 +78,10 @@ and other agents see the message as before. If you later take such a task yourse
 mark is removed.
 
 `thread` assembles the conversation by `re:`, including closed tasks (their text is taken from git
-history). `sent` shows your messages that are not closed yet.
+history). `sent` shows your open tasks — messages have no closed state and are not listed. A task the
+recipient has answered by `re:` is `replied`, the rest are `waiting` and come first: those are the
+real debts. Nothing closes by itself, since an answer can be a question or a refusal: once you accept
+the result, close the task yourself with `xchg done <file>` — the sender may close their own task.
 
 ## Waiting
 
