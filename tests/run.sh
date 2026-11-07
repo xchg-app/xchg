@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # xchg e2e tests in a sandbox: HOME is replaced, hubs are local bare repositories.
 # Run: tests/run.sh [-v]. Names are made up: alice/bob/carol, projects api and web.
+# One scenario with shared state: each section builds on the previous ones.
+# Only what guards a rule of CLAUDE.md, a bug that already happened, or the delivery of mail.
 # Cyrillic names and aliases in contacts are intentional: they cover case-insensitive lookup beyond ASCII.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,664 +19,267 @@ assert_not_contains() { grep -qF -- "$2" <<< "$1" && fail "must not contain '$2'
 assert_eq() { [ "$1" = "$2" ] && ok "$3" || fail "$3: '$1' != '$2'"; }
 run() { set +e; OUT=$("$@" 2>&1); RC=$?; set -e; }
 hook() { local ev="$1"; shift; printf '{"session_id":"t","hook_event_name":"%s"}' "$ev" | "$@"; }
+put() {  # <path in hub> <from> <to> <kind> <title> [re]: a message from someone else, through the second clone
+  local re=""; [ -z "${6:-}" ] || re="re: $6"$'\n'
+  git -C "$W2" pull -q; mkdir -p "$(dirname "$W2/$1")"
+  printf -- '---\nfrom: %s\nto: %s\nkind: %s\ndate: 2026-09-09T10:00:00Z\n%s---\n# %s\n' "$2" "$3" "$4" "$re" "$5" > "$W2/$1"
+  ( cd "$W2" && git add -A && git commit -qm put && git push -q )
+}
 
 H="$SB/home"; mkdir -p "$H"; export HOME="$H"
-mkdir -p "$SB/repos/api" "$SB/repos/web" "$SB/repos/tool"
-for r in api web tool; do git init -q "$SB/repos/$r"; done
-in_api() { ( cd "$SB/repos/api" && "$@" ); }
-in_web() { ( cd "$SB/repos/web" && "$@" ); }
+for r in api web tool; do mkdir -p "$SB/repos/$r"; git init -q "$SB/repos/$r"; done
+in_api()  { ( cd "$SB/repos/api" && "$@" ); }
+in_web()  { ( cd "$SB/repos/web" && "$@" ); }
+in_tool() { ( cd "$SB/repos/tool" && "$X" "$@" ); }
+CONFF="$H/.config/xchg/xchg.conf"
 
-t "install and hub creation"
-mkdir -p "$H/.claude" "$H/.codex" "$H/.gemini" "$H/.hermes" "$H/.cline"   # harnesses present: install configures each of them
-run "$X" install </dev/null; assert_eq "$RC" 0 "install rc"
-for hf in "claude-code .claude/settings.json UserPromptSubmit 30" "codex .codex/hooks.json UserPromptSubmit 30" "gemini .gemini/settings.json BeforeAgent 30000"; do
-  set -- $hf
-  assert_contains "$OUT" "$1 ($H/"
-  assert_eq "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$H/$2")" 'xchg inbox --brief 2>/dev/null || true' "$1: session start hook"
-  assert_eq "$(jq -r ".hooks.$3[0].hooks[0].command" "$H/$2")" 'xchg inbox --brief --max-age 300 2>/dev/null || true' "$1: prompt hook ($3)"
-  assert_eq "$(jq -r ".hooks.$3[0].hooks[0].timeout" "$H/$2")" "$4" "$1: timeout in the harness's unit"
-done
-[ -L "$H/.claude/skills/exchange" ] && [ -L "$H/.agents/skills/xchg-setup" ] && ok "skills linked" || fail "skills not linked"
-# a harness whose hooks are a file per event gets files, but only where that harness already keeps them:
-# the path differs between builds, so the client never creates one on a guess
-[ -d "$H/Documents" ] && fail "install created a directory the harness may not read" || ok "no hooks directory: nothing is created"
-assert_contains "$OUT" "TaskStart (executable)"; assert_contains "$OUT" "--hook-format cline"
-ok "cline: without a hooks directory install prints what to create"
-mkdir -p "$H/Documents/Cline/Rules/Hooks"
-run "$X" install </dev/null
-for ev in TaskStart UserPromptSubmit; do
-  f="$H/Documents/Cline/Rules/Hooks/$ev"
-  [ -x "$f" ] && ok "cline: hook $ev is an executable file" || fail "cline: no hook $ev"
-  assert_contains "$(cat "$f")" "--hook-format cline"
-done
-assert_contains "$(cat "$H/Documents/Cline/Rules/Hooks/TaskStart")" "--session" "cline: the task-start hook shows everything open"
-[ -L "$H/.cline/skills/exchange" ] && ok "cline: skill linked" || fail "cline: skill not linked"
-assert_contains "$OUT" "add to $H/.hermes/config.yaml"; assert_contains "$OUT" "pre_llm_call"
-assert_contains "$OUT" "--hook-format hermes"; ok "hermes: install prints the snippet instead of rewriting the config"
-[ -L "$H/.hermes/skills/exchange" ] && ok "hermes: skill linked" || fail "hermes: skill not linked"
-run "$X" status; assert_contains "$OUT" "cline: hooks TaskStart ok"; assert_contains "$OUT" "hermes: hook pre_llm_call MISSING"
-printf 'hooks:\n  pre_llm_call:\n    - command: "xchg inbox --brief --max-age 300 --hook-format hermes"\n' > "$H/.hermes/config.yaml"
-run "$X" status; assert_contains "$OUT" "hermes: hook pre_llm_call ok" "status reads the pasted snippet"
-run "$X" install </dev/null; assert_contains "$OUT" "hook BeforeAgent already present"; ok "install is idempotent"
-assert_eq "$(jq '.hooks.SessionStart | length' "$H/.claude/settings.json")" 1 "no duplicate hooks"
-run "$X" inbox --brief; assert_eq "$OUT" "" "no hubs: the hook stays silent (0 bytes)"
-git init -q --bare "$SB/bare-work"
-git config --global init.defaultBranch master   # the hub branch must not depend on the local default
-run "$X" hub init work --remote "$SB/bare-work" --login alice; assert_eq "$RC" 0 "hub init"; assert_contains "$OUT" "hub work created"
-assert_eq "$(git -C "$H/exchange/work" branch --show-current)" main "the hub is always on main"
-git config --global init.defaultBranch main
-assert_contains "$(cat "$H/exchange/work/README.md")" "contract: 6"
-run "$X" hubs; assert_contains "$OUT" "work*"; assert_contains "$OUT" "alice"
-
-t "a token in the remote URL stays out of the output"
-run "$X" hub add tok "https://alice:SECRET@example.invalid/git/tok.git" --login alice; assert_eq "$RC" 1 "clone of an unreachable remote fails"
-assert_not_contains "$OUT" "SECRET"; assert_contains "$OUT" "alice:***@example.invalid"
-run "$X" hub init tok2 --remote "https://alice:SECRET@example.invalid/git/tok2.git" --login alice; assert_eq "$RC" 1 "push to an unreachable remote fails"
-assert_not_contains "$OUT" "SECRET"; assert_contains "$OUT" "alice:***@example.invalid"
-CONFF="$H/.config/xchg/xchg.conf"; cp "$CONFF" "$SB/conf.bak"
-sed -i.bak 's#^\(remote *= *\).*bare-work$#\1https://alice:SECRET@example.invalid/git/work.git#' "$CONFF"
-run "$X" hubs; assert_not_contains "$OUT" "SECRET"; assert_contains "$OUT" "alice:***@example.invalid"
-run "$X" hub add tok3 "https://SECRET@example.invalid/git/tok3.git" --login alice; assert_eq "$RC" 1 "clone with a token without a login fails"
-assert_not_contains "$OUT" "SECRET"; assert_contains "$OUT" "https://***@example.invalid"
-cp "$SB/conf.bak" "$CONFF"; rm -rf "$H/exchange/tok2"
-
-t "an ssh key of its own, per hub"
-command -v ssh-keygen >/dev/null || { ok "no ssh-keygen: key tests skipped"; SKIP_KEYS=1; }
-if [ "${SKIP_KEYS:-0}" = 0 ]; then
-run "$X" key new --name demo; assert_eq "$RC" 0 "key new"
-K="$H/.config/xchg/keys/demo_ed25519"
-[ -f "$K" ] && ok "the key is created outside ~/.ssh" || fail "no key at $K"
-assert_eq "$(ls -ld "$H/.config/xchg/keys" | cut -c1-10)" "drwx------" "the key directory is private"
-assert_eq "$(ls -l "$K" | cut -c1-10)" "-rw-------" "the key file is private"
-assert_contains "$OUT" "ssh-ed25519" "the public key is printed"
-BEFORE=$(cat "$K")
-run "$X" key new --name demo; assert_contains "$OUT" "already exists"
-assert_eq "$(cat "$K")" "$BEFORE" "an existing key is never overwritten"
-run "$X" hub add keyed "$SB/bare-work" --login alice --ssh-key "$K"; assert_eq "$RC" 0 "hub add with a key"
-assert_contains "$(git -C "$H/exchange/keyed" config core.sshCommand)" "$K" "the clone remembers the key"
-assert_contains "$(git -C "$H/exchange/keyed" config core.sshCommand)" "IdentitiesOnly=yes"
-assert_contains "$(git -C "$H/exchange/keyed" config core.sshCommand)" "$H/.config/xchg/known_hosts" "ssh keeps its known hosts with the config, not in ~/.ssh"
-assert_contains "$(cat "$H/.config/xchg/xchg.conf")" "ssh_key = $K" "the key is written to the registry"
-run "$X" hubs; assert_eq "$RC" 0 "a registry with ssh_key still parses"
-run "$X" key new --name other >/dev/null; K2="$H/.config/xchg/keys/other_ed25519"
-run "$X" hub key keyed "$K2"; assert_eq "$RC" 0 "hub key"
-assert_contains "$(git -C "$H/exchange/keyed" config core.sshCommand)" "$K2" "the clone takes the new key"
-assert_contains "$(cat "$H/.config/xchg/xchg.conf")" "ssh_key = $K2" "and so does the registry"
-run "$X" hub key keyed "$H/nosuch"; assert_eq "$RC" 1 "a missing key file is an error"
-run "$X" hub add bad "$SB/bare-work" --ssh-key "$H/nosuch"; assert_eq "$RC" 1 "hub add checks the key file too"
-run "$X" hub check keyed; assert_eq "$RC" 0 "hub check asks git whether the hub answers"
-assert_contains "$OUT" "the key $K2 is accepted"
-run "$X" hub key keyed "$K" >/dev/null
-cp "$H/.config/xchg/xchg.conf" "$SB/conf.keyed"
-awk -v r="$SB/nosuch.git" '/^remote  = /{ $0 = "remote  = " r } { print }' "$SB/conf.keyed" > "$H/.config/xchg/xchg.conf"
-run "$X" hub check keyed; assert_eq "$RC" 1 "an unreachable hub fails the check"; assert_contains "$OUT" "cannot reach"
-cp "$SB/conf.keyed" "$H/.config/xchg/xchg.conf"
-run "$X" hub rm keyed >/dev/null
-fi
-
-t "hub check without a key of its own goes through the user's ssh"
-# a stand-in ssh: logs its arguments and runs the remote command locally
-mkdir -p "$SB/fakessh"; cat > "$SB/fakessh/ssh" <<'SH'
-#!/usr/bin/env bash
-echo "$*" >> "${0%/*}/log"
-while [ $# -gt 0 ]; do case "$1" in -o|-i|-p) shift 2;; -*) shift;; *) break;; esac; done
-shift; eval "$*"
-SH
-chmod +x "$SB/fakessh/ssh"
-cp "$CONFF" "$SB/conf.ssh"
-sed -i.bak "s#^\(remote *= *\).*bare-work\$#\1fakehost:$SB/bare-work#" "$CONFF"
-PATH="$SB/fakessh:$PATH" run "$X" hub check work; assert_eq "$RC" 0 "a keyless hub over ssh answers"
-assert_contains "$OUT" "answers"; assert_contains "$(cat "$SB/fakessh/log")" "BatchMode=yes"
-: > "$SB/fakessh/log"
-git config --global core.sshCommand "$SB/fakessh/ssh -o Via=config"
-run "$X" hub check work; assert_eq "$RC" 0 "core.sshCommand is kept for a keyless hub"
-assert_contains "$(cat "$SB/fakessh/log")" "Via=config"; git config --global --unset core.sshCommand
-sed -i.bak "s#^\(remote *= *\).*bare-work\$#\1fakehost:$SB/nosuch#" "$CONFF"
-PATH="$SB/fakessh:$PATH" run "$X" hub check work; assert_eq "$RC" 1 "an unreachable keyless hub fails the check"
-assert_contains "$OUT" "cannot reach"
-cp "$SB/conf.ssh" "$CONFF"
-
-t "harness packages"
-# every package is built by tools/package.sh; the package repositories hold nothing else
-PKG="$SB/packages"
-VER=$(jq -r .version "$ROOT/harness/gemini/gemini-extension.json")
-for p in "claude-code .claude-plugin/plugin.json UserPromptSubmit" "codex .codex-plugin/plugin.json UserPromptSubmit" "gemini gemini-extension.json BeforeAgent"; do
-  set -- $p; name=$1; manifest=$2; prompt=$3
-  run "$ROOT/tools/package.sh" "$name" "$PKG/$name"; assert_eq "$RC" 0 "$name: the package builds"
-  assert_eq "$(jq -r .version "$PKG/$name/$manifest")" "$VER" "$name: same version as the others"
-  for f in bin/xchg skills/exchange/SKILL.md skills/xchg-setup/SKILL.md hub/README.md LICENSE README.md hooks/hooks.json; do
-    [ -f "$PKG/$name/$f" ] && [ ! -L "$PKG/$name/$f" ] && ok "$name: has $f as a real file" || fail "$name: $f is missing or a link"
-  done
-  # each harness names its events, its root variable and its timeout unit differently
-  assert_eq "$(jq -r '.hooks | keys | sort | join(" ")' "$PKG/$name/hooks/hooks.json")" "$(printf '%s\n' SessionStart "$prompt" | sort | tr '\n' ' ' | sed 's/ $//')" "$name: exactly the two events"
-  for ev in SessionStart "$prompt"; do
-    c=$(jq -r ".hooks.$ev[0].hooks[0].command" "$PKG/$name/hooks/hooks.json" | sed "s|\${CLAUDE_PLUGIN_ROOT}|R|; s|\${PLUGIN_ROOT}|R|; s|\${extensionPath}|R|")
-    assert_contains "$c" "R/bin/xchg"
-  done
-  assert_contains "$(cat "$PKG/$name/README.md")" "generated"
-  assert_eq "$(cat "$PKG/$name/.gitattributes" 2>/dev/null)" "* text=auto eol=lf" "$name: the package pins LF line endings"
-done
-assert_eq "$(jq -r .hooks.SessionStart[0].hooks[0].timeout "$PKG/gemini/hooks/hooks.json")" 30000 "gemini counts the timeout in milliseconds"
-assert_eq "$(jq -r '.plugins[0].source' "$PKG/claude-code/.claude-plugin/marketplace.json")" "./" "claude-code: the marketplace points at the package root"
-assert_eq "$(jq -r '.plugins[0].source.path' "$PKG/codex/.agents/plugins/marketplace.json")" "./" "codex: the marketplace points at the package root"
-assert_not_contains "$(cat "$PKG/claude-code/.claude-plugin/plugin.json")" '"hooks"'
-assert_not_contains "$(cat "$PKG/codex/.codex-plugin/plugin.json")" '"hooks"'
-ok "no manifest points at hooks/hooks.json: it is found by itself, a reference would be a duplicate"
-assert_contains "$(cat "$PKG/claude-code/commands/setup.md")" "xchg-setup"
-assert_contains "$(cat "$PKG/gemini/commands/xchg/setup.toml")" "xchg-setup"
-# nothing of a single harness may sit in the repository root: the next harness would collide with it
-for f in hooks commands gemini-extension.json .claude-plugin .codex-plugin .agents; do
-  [ -e "$ROOT/$f" ] && fail "the root holds $f, which belongs to one harness" || ok "the root is free of $f"
-done
-# the package repositories are built, never written by hand: publishing overwrites them whole
-BARE="$SB/gemini-plugin.git"; git init -q --bare "$BARE"
-run env XCHG_PACKAGE_REPO="$BARE" "$ROOT/tools/publish.sh" gemini "$VER"; assert_eq "$RC" 0 "the package is published"
-run git -C "$BARE" show "v$VER:gemini-extension.json"; assert_contains "$OUT" "\"version\": \"$VER\"" "the tag v$VER carries the package"
-run git -C "$BARE" show "v$VER:bin/xchg"; assert_contains "$OUT" "xchg"
-# a clone on a machine with core.autocrlf=true (how Windows git is set up) still gets a working client
-run git -c core.autocrlf=true clone -q "$BARE" "$SB/crlf-clone"
-grep -q "$(printf '\r')" "$SB/crlf-clone/bin/xchg" && fail "the client arrived with CRLF under autocrlf=true" || ok "the client arrives with LF under autocrlf=true"
-run env HOME="$SB/crlf-home" "$SB/crlf-clone/bin/xchg" version; assert_eq "$RC" 0 "the client from an autocrlf clone runs"
-run env XCHG_PACKAGE_REPO="$BARE" "$ROOT/tools/publish.sh" gemini "$VER"; assert_contains "$OUT" "already published"
-run env XCHG_PACKAGE_REPO="$BARE" "$ROOT/tools/publish.sh" gemini 9.9.9; assert_eq "$RC" 1 "a version other than the one in the manifests is refused"
-run env XCHG_PACKAGE_REPO="https://user:SECRET@example.invalid/x.git" "$ROOT/tools/publish.sh" gemini "$VER"
-assert_eq "$RC" 1 "an unreachable package repository fails"; assert_not_contains "$OUT" "SECRET"
-
-if command -v claude >/dev/null 2>&1; then
-  run claude plugin validate "$PKG/claude-code"; assert_eq "$RC" 0 "claude plugin validate"
-  # validate doesn't catch load errors, so do a real install into a separate HOME
-  PH="$SB/claude-home"; mkdir -p "$PH"
-  run env HOME="$PH" claude plugin marketplace add "$PKG/claude-code"; assert_eq "$RC" 0 "claude-code: the marketplace is added"
-  run env HOME="$PH" claude plugin install xchg@xchg; assert_eq "$RC" 0 "claude-code: the plugin installs"
-  run env HOME="$PH" claude plugin list; assert_contains "$OUT" "xchg@xchg"; assert_not_contains "$OUT" "failed to load"
-else ok "no claude CLI: claude-code install skipped"; fi
-if command -v codex >/dev/null 2>&1; then
-  PH="$SB/codex-home"; mkdir -p "$PH/.codex"
-  run env HOME="$PH" CODEX_HOME="$PH/.codex" codex plugin marketplace add "$PKG/codex"; assert_eq "$RC" 0 "codex: the marketplace is added"
-  run env HOME="$PH" CODEX_HOME="$PH/.codex" codex plugin add xchg@xchg; assert_eq "$RC" 0 "codex: the plugin installs"
-  CI=$(ls -d "$PH"/.codex/plugins/cache/xchg/xchg/*/ | head -1)
-  [ -f "$CI/bin/xchg" ] && [ -f "$CI/hooks/hooks.json" ] && [ -f "$CI/skills/exchange/SKILL.md" ] && ok "codex: the installed plugin is complete" || fail "codex: the installed plugin is incomplete"
-else ok "no codex CLI: codex install skipped"; fi
-if command -v gemini >/dev/null 2>&1; then
-  PH="$SB/gemini-home"; mkdir -p "$PH"
-  run bash -c "yes y | HOME='$PH' gemini extensions install '$PKG/gemini' --consent"; assert_eq "$RC" 0 "gemini: the extension installs"
-  run env HOME="$PH" gemini extensions list; assert_contains "$OUT" "xchg"
-  [ -f "$PH/.gemini/extensions/xchg/bin/xchg" ] && [ -f "$PH/.gemini/extensions/xchg/hooks/hooks.json" ] && ok "gemini: the installed extension is complete" || fail "gemini: the installed extension is incomplete"
-else ok "no gemini CLI: gemini install skipped"; fi
-
-t "bash 3.2 compatibility (static; the live run is tests/bash32.sh)"
+t "static: bash 3.2 and the last line"
 assert_eq "$(grep -c 'declare -A' "$X" || true)" 0 "no associative arrays"
 BAD=$(LC_ALL=C awk '/\$[A-Za-z_][A-Za-z0-9_]*[\200-\377]/ {print FNR": "$0}' "$X")
 assert_eq "$BAD" "" "no non-ASCII right after a variable name (under set -u the byte becomes part of the name)"
+assert_eq "$(tail -n 1 "$X")" 'main "$@"; exit $?' "the last line calls main and exits"
 
-t "registration: contact book and passports"
-assert_contains "$(cat "$H/exchange/work/contacts.md")" "| alice |"; ok "the hub creator is in the contact book"
-assert_contains "$(cat "$H/exchange/work/contacts.md")" "| login | name | aliases | contact |"
-[ -d "$H/exchange/work/people/alice" ] && ok "the person's directory exists" || fail "no people/alice"
+t "install"
+mkdir -p "$H/.claude"
+run "$X" install </dev/null
+assert_eq "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$H/.claude/settings.json")" 'xchg inbox --brief 2>/dev/null || true' "session start hook"
+run "$X" install </dev/null; assert_eq "$(jq '.hooks.SessionStart | length' "$H/.claude/settings.json")" 1 "install is idempotent: no duplicate hooks"
+run "$X" inbox --brief; assert_eq "$OUT" "" "no hubs: the hook stays silent (0 bytes)"
 
-t "projects and agent identity"
-run in_api "$X" projects add api --repo "git@example.com:team/api.git"; assert_eq "$RC" 0 "projects add"
-assert_contains "$OUT" "project added: work:projects/api"; assert_contains "$OUT" "agent registered: work:@api:alice"
-assert_contains "$(cat "$H/exchange/work/projects/api/alice/README.md")" "Person: alice"
-assert_contains "$(cat "$H/exchange/work/projects/api/README.md")" "Repository: git@example.com:team/api.git"
-run in_api "$X" projects add api; assert_eq "$RC" 0 "a repeated projects add doesn't fail"; assert_contains "$OUT" "already exists"
-run in_web "$X" projects add --repo "git@example.com:team/web.git"; assert_eq "$RC" 0 "projects add without a name, with a flag"
-assert_contains "$OUT" "projects/web"; ok "the project name comes from the repository"
+t "hub, tokens, keys"
+git init -q --bare "$SB/bare-work"
+git config --global init.defaultBranch master   # the hub branch must not depend on the local default
+run "$X" hub init work --remote "$SB/bare-work" --login alice
+assert_eq "$(git -C "$H/exchange/work" branch --show-current)" main "the hub is always on main"
+git config --global init.defaultBranch main
+run "$X" hub add tok "https://alice:SECRET@example.invalid/git/tok.git" --login alice
+assert_not_contains "$OUT" "SECRET"; assert_contains "$OUT" "alice:***@example.invalid"
+if command -v ssh-keygen >/dev/null; then
+  run "$X" key new --name demo; K="$H/.config/xchg/keys/demo_ed25519"
+  assert_eq "$(ls -l "$K" | cut -c1-10)" "-rw-------" "the key file is private"
+  BEFORE=$(cat "$K"); run "$X" key new --name demo; assert_eq "$(cat "$K")" "$BEFORE" "an existing key is never overwritten"
+else ok "no ssh-keygen: key tests skipped"; fi
+
+t "harness packages"
+PKG="$SB/packages"; VER=$(jq -r .version "$ROOT/harness/gemini/gemini-extension.json")
+for p in "claude-code .claude-plugin/plugin.json" "codex .codex-plugin/plugin.json" "gemini gemini-extension.json"; do
+  set -- $p
+  run "$ROOT/tools/package.sh" "$1" "$PKG/$1"; assert_eq "$RC" 0 "$1: the package builds"
+  assert_eq "$(jq -r .version "$PKG/$1/$2")" "$VER" "$1: same version as the others"
+done
+# a clone on a machine with core.autocrlf=true (how Windows git is set up) still gets a working client
+BARE="$SB/gemini-plugin.git"; git init -q --bare "$BARE"
+run env XCHG_PACKAGE_REPO="$BARE" "$ROOT/tools/publish.sh" gemini "$VER"; assert_eq "$RC" 0 "the package is published"
+run git -c core.autocrlf=true clone -q "$BARE" "$SB/crlf-clone"
+grep -q "$(printf '\r')" "$SB/crlf-clone/bin/xchg" && fail "the client arrived with CRLF under autocrlf=true" || ok "the client arrives with LF under autocrlf=true"
+# validate doesn't catch load errors: a real install into a separate HOME
+if command -v claude >/dev/null 2>&1; then PH="$SB/claude-home"; mkdir -p "$PH"
+  run env HOME="$PH" claude plugin marketplace add "$PKG/claude-code"
+  run env HOME="$PH" claude plugin install xchg@xchg; assert_eq "$RC" 0 "claude-code: the plugin installs"
+  run env HOME="$PH" claude plugin list; assert_not_contains "$OUT" "failed to load"
+else ok "no claude CLI: claude-code install skipped"; fi
+if command -v codex >/dev/null 2>&1; then PH="$SB/codex-home"; mkdir -p "$PH/.codex"
+  run env HOME="$PH" CODEX_HOME="$PH/.codex" codex plugin marketplace add "$PKG/codex"
+  run env HOME="$PH" CODEX_HOME="$PH/.codex" codex plugin add xchg@xchg; assert_eq "$RC" 0 "codex: the plugin installs"
+else ok "no codex CLI: codex install skipped"; fi
+if command -v gemini >/dev/null 2>&1; then PH="$SB/gemini-home"; mkdir -p "$PH"
+  run bash -c "yes y | HOME='$PH' gemini extensions install '$PKG/gemini' --consent"; assert_eq "$RC" 0 "gemini: the extension installs"
+else ok "no gemini CLI: gemini install skipped"; fi
+
+t "projects and agents"
+run in_api "$X" projects add api --repo "git@example.com:team/api.git"; assert_contains "$OUT" "agent registered: work:@api:alice"
+run in_web "$X" projects add --repo "git@example.com:team/web.git"
 run in_api "$X" agent; assert_eq "$OUT" "work:@api:alice" "agent = person x project"
-run in_web "$X" agent; assert_eq "$OUT" "work:@web:alice" "another repository, another agent"
-run bash -c "cd '$SB/repos/tool' && '$X' agent"; assert_contains "$OUT" "is not a project in any hub"
-run bash -c "cd / && '$X' agent"; assert_eq "$RC" 1 "no agent outside a repository"
-run in_api "$X" projects; assert_contains "$OUT" "api              here"; assert_contains "$OUT" "git@example.com:team/api.git"
-# a card written by an older client, labelled in Russian, is still read
-( cd "$H/exchange/work" && mkdir -p projects/legacy && printf '# legacy\n\nРепозиторий: git@example.com:team/legacy.git\n' > projects/legacy/README.md \
-  && git add -A && git commit -qm legacy && git push -q )
-run in_api "$X" projects; assert_contains "$OUT" "git@example.com:team/legacy.git"
-# a token in the origin URL must not land in the hub: the card and the passport only say where the code is
+# a token in the origin URL must not land in the hub
 mkdir -p "$SB/repos/sec"; git init -q "$SB/repos/sec"; git -C "$SB/repos/sec" remote add origin "https://alice:SECRET@example.invalid/team/sec.git"
-run bash -c "cd '$SB/repos/sec' && '$X' projects add sec"; assert_eq "$RC" 0 "projects add with a token in origin"
-SC="$H/exchange/work/projects/sec/README.md"; SP="$H/exchange/work/projects/sec/alice/README.md"
-assert_not_contains "$(cat "$SC")" "SECRET"; assert_not_contains "$(cat "$SC")" "alice:"; assert_contains "$(cat "$SC")" "Repository: https://example.invalid/team/sec.git"
-assert_not_contains "$(cat "$SP")" "SECRET"; assert_not_contains "$(cat "$SP")" "alice:"; assert_contains "$(cat "$SP")" "Repository: https://example.invalid/team/sec.git"
-run bash -c "cd '$SB/repos/sec' && '$X' projects add sec2 --repo https://bob:TOKEN@example.invalid/team/sec2.git"; assert_eq "$RC" 0 "projects add with a token in --repo"
-assert_not_contains "$(cat "$H/exchange/work/projects/sec2/README.md")" "TOKEN"; assert_contains "$(cat "$H/exchange/work/projects/sec2/README.md")" "Repository: https://example.invalid/team/sec2.git"
+run bash -c "cd '$SB/repos/sec' && '$X' projects add sec"
+assert_not_contains "$(cat "$H/exchange/work/projects/sec/README.md" "$H/exchange/work/projects/sec/alice/README.md")" "SECRET"
 
-t "address: part order doesn't matter, all levels"
+t "addresses"
 printf '| bob | Борис Петров | боря | bob@example.com |\n| carol | Кэрол | | carol@example.com |\n' >> "$H/exchange/work/contacts.md"
-mkdir -p "$H/exchange/work/people/bob" "$H/exchange/work/people/carol"
-( cd "$H/exchange/work" && git add -A && git commit -qm contacts && git push -q )
-run in_api "$X" send @api:bob task1 <<< "# A task for Bob's agent"; assert_eq "$RC" 0 "@api:bob"
-assert_contains "$OUT" "sent: work:projects/api/bob/"
-run in_api "$X" send bob:@api task2 <<< '# Same place, other order'; assert_contains "$OUT" "work:projects/api/bob/"
-ok "user:project and project:user are one address"
-run in_api "$X" send боря task3 <<< '# To a person by alias'; assert_contains "$OUT" "sent: work:people/bob/"
-run in_api "$X" send @web task4 <<< '# Everyone on project web'; assert_contains "$OUT" "sent: work:projects/web/"
-run in_api "$X" post all news --ref "api/CHANGELOG.md" <<< '# Release 2.3'; assert_contains "$OUT" "sent: work:all/"
-run in_api "$X" send @nope x <<< '# x'; assert_eq "$RC" 1 "no such project"; assert_contains "$OUT" "xchg projects add nope"
-run in_api "$X" send nobody x <<< '# x'; assert_eq "$RC" 1 "no such person"; assert_contains "$OUT" "xchg who"
-# the registry of people is the contact book: a directory without a book row is not a recipient
-mkdir -p "$H/exchange/work/people/dave"; touch "$H/exchange/work/people/dave/.gitkeep"
-# an alias of a participant listed above equals the login bob: the login wins
+mkdir -p "$H/exchange/work/people/bob" "$H/exchange/work/people/carol" "$H/exchange/work/people/dave"; touch "$H/exchange/work/people/dave/.gitkeep"
+# erin's alias equals the login bob: the login wins; dave has a directory but no book row: he left
 awk '{print} /^\|---/ {print "| erin | Эрин | bob | erin@example.com |"}' "$H/exchange/work/contacts.md" > "$SB/c.md" && mv "$SB/c.md" "$H/exchange/work/contacts.md"
-( cd "$H/exchange/work" && git add -A && git commit -qm gone && git push -q )
-run in_api "$X" send dave x <<< '# x'; assert_eq "$RC" 1 "no messages to someone who left"; assert_contains "$OUT" "'dave' is no longer in hub work"
-run in_api "$X" send work:dave x <<< '# x'; assert_eq "$RC" 1 "with a hub prefix too"; assert_contains "$OUT" "'dave' is no longer in hub work"
-run in_api "$X" send work:nobody x <<< '# x'; assert_contains "$OUT" "recipient 'nobody' not found in hub work"
+( cd "$H/exchange/work" && git add -A && git commit -qm contacts && git push -q )
+run in_api "$X" send bob:@api task1 <<< "# A task for Bob's agent"; assert_contains "$OUT" "sent: work:projects/api/bob/"
+run in_api "$X" send боря task3 <<< '# To a person by alias'; assert_contains "$OUT" "sent: work:people/bob/"
 run in_api "$X" send bob task5 <<< "# By login, not by someone else's alias"; assert_contains "$OUT" "sent: work:people/bob/"
-run in_api "$X" send Эрин task6 <<< '# By name'; assert_contains "$OUT" "sent: work:people/erin/"
-# the same without python3: the book lookup falls back to awk
-# only the directories of the tools the client needs: the whole PATH may hold thousands of files on a slow disk
+run in_api "$X" send nobody x <<< '# x'; assert_eq "$RC" 1 "no such person"
+run in_api "$X" send dave x <<< '# x'; assert_contains "$OUT" "'dave' is no longer in hub work"
+run in_api "$X" post all news <<< '# Release 2.3'
+# python3 is optional: without it the book lookup falls back to awk
 NOPY="$SB/nopy"; mkdir -p "$NOPY"
 for dir in $(for c in bash git awk sed grep date mktemp env; do dirname "$(command -v "$c")"; done | sort -u); do
   for f in "$dir"/*; do case "${f##*/}" in (python3*) continue;; esac
   [ -x "$f" ] && [ ! -e "$NOPY/${f##*/}" ] && ln -s "$f" "$NOPY/${f##*/}"; done; done; true
-run in_api env PATH="$NOPY" "$X" send боря task7 <<< '# Alias without python3'; assert_contains "$OUT" "sent: work:people/bob/"
 run in_api env PATH="$NOPY" "$X" send "Борис Петров" task9 <<< '# Full name without python3'; assert_contains "$OUT" "sent: work:people/bob/"
-run in_api env PATH="$NOPY" "$X" send dave x <<< '# x'; assert_contains "$OUT" "'dave' is no longer in hub work"
 M=$(ls "$H/exchange/work/projects/api/bob/"*task1.md)
-assert_eq "$(sed -n 's/^from: //p' "$M")" "alice/api" "from = person/project"
-assert_eq "$(sed -n 's/^to: //p' "$M")" "@api:bob" "to = canonical address"
-assert_eq "$(sed -n 's/^kind: //p' "$M")" "task" "send creates a task"
-assert_eq "$(sed -n 's/^kind: //p' "$(ls "$H/exchange/work/all/"*news.md)")" "message" "post creates a message"
+assert_eq "$(sed -n 's/^from: //p; s/^to: //p; s/^kind: //p' "$M" | tr '\n' ' ')" "alice/api @api:bob task " "from, to and kind of a task"
 
 t "inbox shows only this session's addresses"
-# messages for alice are put into the hub on behalf of others
 W2="$SB/w2"; git clone -q "$SB/bare-work" "$W2"
 in_api "$X" inbox >/dev/null; in_web "$X" inbox >/dev/null   # both agents are already known: a new agent has its own test
-mkdir -p "$W2/projects/api/alice" "$W2/projects/web/alice" "$W2/people/alice"
-printf -- '---\nfrom: bob/api\nto: @api:alice\nkind: task\ndate: 2026-09-09T10:00:00Z\n---\n# Fix the schema\n' > "$W2/projects/api/alice/20260909-100000_bob_schema.md"
-printf -- '---\nfrom: carol/web\nto: @web:alice\nkind: task\ndate: 2026-09-09T10:05:00Z\n---\n# Fix the header\n' > "$W2/projects/web/alice/20260909-100500_carol_head.md"
-printf -- '---\nfrom: bob/api\nto: alice\nkind: task\ndate: 2026-09-09T10:10:00Z\n---\n# Personal request\n' > "$W2/people/alice/20260909-101000_bob_personal.md"
-printf -- '---\nfrom: carol/web\nto: @api\nkind: task\ndate: 2026-09-09T10:15:00Z\n---\n# A task in the api queue\n' > "$W2/projects/api/20260909-101500_carol_queue.md"
-printf -- '---\nfrom: carol/web\nto: all\nkind: note\ndate: 2026-09-09T10:20:00Z\nref: web/README.md\n---\n# Short day on Friday\n' > "$W2/all/20260909-102000_carol_friday.md"
-( cd "$W2" && git add -A && git commit -qm msgs && git push -q )
+put projects/api/alice/20260909-100000_bob_schema.md bob/api @api:alice task "Fix the schema"
+put projects/web/alice/20260909-100500_carol_head.md carol/web @web:alice task "Fix the header"
+put people/alice/20260909-101000_bob_personal.md bob/api alice task "Personal request"
+put projects/api/20260909-101500_carol_queue.md carol/web @api task "A task in the api queue"
+put all/20260909-102000_carol_friday.md carol/web all note "Short day on Friday"
 run in_api "$X" inbox
-assert_contains "$OUT" "Fix the schema"; assert_contains "$OUT" "Personal request"
-assert_contains "$OUT" "A task in the api queue"; assert_contains "$OUT" "Short day on Friday"
-assert_not_contains "$OUT" "Fix the header"
-assert_contains "$OUT" "in other projects (xchg inbox --all)"
-# the address and file columns are the message's own, not the next address's: read/seen/reply take the path as is
+assert_not_contains "$OUT" "Fix the header"; assert_contains "$OUT" "in other projects (xchg inbox --all)"
+# the address and file columns are the message's own: read/seen/reply take them as is
 assert_contains "$OUT" "work     all          message all/20260909-102000_carol_friday.md"
-assert_contains "$OUT" "work     me           task    people/alice/20260909-101000_bob_personal.md"
-assert_contains "$OUT" "work     @api         task    projects/api/20260909-101500_carol_queue.md"
-assert_contains "$OUT" "work     @api:me      task    projects/api/alice/20260909-100000_bob_schema.md"
 while read -r _ _ _ rel _; do [ -f "$H/exchange/work/$rel" ] || fail "inbox path does not exist in the hub: $rel"; done < <(grep -F .md <<< "$OUT")
 ok "every inbox path exists in the hub"
-run in_web "$X" inbox; assert_contains "$OUT" "Fix the header"; assert_not_contains "$OUT" "Fix the schema"
-run in_api "$X" inbox --all; assert_contains "$OUT" "Fix the header"; ok "--all lifts the project filter"
-run in_api "$X" inbox; assert_contains "$OUT" "@api:me"
-assert_eq "$(awk '/Fix the schema/ {print $3}' <<< "$OUT")" task "kind column: task"
-assert_eq "$(awk '/Short day on Friday/ {print $3}' <<< "$OUT")" message "kind column: an older note reads as a message"
-
-t "messages are marked read, tasks stay"
-run in_api "$X" seen all; assert_contains "$OUT" "read: work:all"
-run in_api "$X" seen @api:me; assert_eq "$RC" 0 "an address from the inbox column (@api:me) is accepted"; assert_contains "$OUT" "read: work:@api:alice"
-run in_api "$X" seen me; assert_eq "$RC" 0 "me is me"; assert_contains "$OUT" "read: work:alice"
-run in_api "$X" inbox; assert_not_contains "$OUT" "Short day on Friday"; ok "a read message is out of the way"
-run in_api "$X" inbox --history; assert_contains "$OUT" "Short day on Friday"
-assert_contains "$(in_api "$X" inbox)" "A task in the api queue"; ok "the task stays visible"
-run in_web "$X" inbox; assert_contains "$OUT" "Short day on Friday"; ok "read marks are per agent: for web the message is still unread"
+run in_api "$X" seen all
+run in_api "$X" inbox; assert_not_contains "$OUT" "Short day on Friday"; assert_contains "$OUT" "A task in the api queue"   # a read message goes, a task stays
+run in_web "$X" inbox; assert_contains "$OUT" "Short day on Friday"   # read marks are per agent
 
 t "a new agent doesn't get the old history as unread"
-git -C "$W2" pull -q; mkdir -p "$W2/projects/fresh/alice"
-printf -- '---\nfrom: carol/web\nto: @fresh\nkind: message\ndate: 2026-09-01T10:00:00Z\n---\n# Old project news\n' > "$W2/projects/fresh/20260901-100000_carol_oldnews.md"
-printf -- '---\nfrom: carol/web\nto: @fresh:alice\nkind: message\ndate: 2026-09-01T10:05:00Z\n---\n# Handed over to the agent\n' > "$W2/projects/fresh/alice/20260901-100500_carol_handover.md"
-printf -- '---\nfrom: carol/web\nto: @fresh\nkind: task\ndate: 2026-09-01T10:10:00Z\n---\n# Old open task\n' > "$W2/projects/fresh/20260901-101000_carol_oldtask.md"
-( cd "$W2" && git add -A && git commit -qm fresh && git push -q )
-mkdir -p "$SB/repos/fresh"; git init -q "$SB/repos/fresh"; in_fresh() { ( cd "$SB/repos/fresh" && "$@" ); }
-in_fresh "$X" projects add >/dev/null
-printf '# Fresh one\n' | in_web "$X" post @fresh today >/dev/null
-run in_fresh hook SessionStart "$X" inbox --brief; C=$(jq -r .hookSpecificOutput.additionalContext <<< "$OUT")
-assert_not_contains "$C" "Short day on Friday"; assert_not_contains "$C" "Old project news"; ok "old messages of shared addresses are marked read"
-assert_contains "$C" "earlier messages marked read for this new agent (xchg inbox --history)"
-assert_contains "$C" "Fresh one"; ok "a fresh message stays unread"
-assert_contains "$C" "Old open task"; ok "an old task stays open"
-assert_contains "$C" "Handed over to the agent"; ok "the agent's own address is left alone"
-assert_contains "$C" "hub work: the contact book (xchg who):"; assert_contains "$C" "  alice (you)"
-assert_contains "$C" "  bob  Борис Петров  aliases: боря"; ok "a new agent is introduced to the contact book"
-run in_fresh "$X" inbox; assert_not_contains "$OUT" "marked read for this new agent"; assert_not_contains "$OUT" "the contact book"; ok "only once"
-run in_fresh "$X" inbox --history; assert_contains "$OUT" "Old project news"
-run in_web "$X" inbox; assert_contains "$OUT" "Short day on Friday"; ok "an agent that already exists keeps its unread"
-rm -rf "$H/exchange/work/.git/xchg-read/fresh"* "$H/exchange/work/.git/xchg-shown/fresh"
-run in_fresh env XCHG_READ_GRACE=315360000 "$X" inbox; assert_contains "$OUT" "Old project news"; ok "XCHG_READ_GRACE widens the window"
+put projects/fresh/20260901-100000_carol_oldnews.md carol/web @fresh message "Old project news"
+put projects/fresh/alice/20260901-100500_carol_handover.md carol/web @fresh:alice message "Handed over to the agent"
+put projects/fresh/20260901-101000_carol_oldtask.md carol/web @fresh task "Old open task"
+mkdir -p "$SB/repos/fresh"; git init -q "$SB/repos/fresh"; ( cd "$SB/repos/fresh" && "$X" projects add >/dev/null )
+run bash -c "cd '$SB/repos/fresh' && '$X' inbox"
+assert_not_contains "$OUT" "Old project news"; assert_contains "$OUT" "Old open task"; assert_contains "$OUT" "Handed over to the agent"
+# old messages of shared addresses are read; old tasks and the agent's own address stay
 git -C "$W2" pull -q; git -C "$W2" rm -rq projects/fresh; ( cd "$W2" && git commit -qm "fresh away" && git push -q ); "$X" sync >/dev/null
 
 t "claim and done"
 Q=$(ls "$H/exchange/work/projects/api/"*queue.md)
-run in_api "$X" claim "$Q"; assert_eq "$RC" 0 "claim rc"; assert_contains "$OUT" "claimed: work:projects/api/alice/"
-[ -f "$H/exchange/work/projects/api/alice/$(basename "$Q")" ] && ok "the task moved to my address" || fail "claim didn't move it"
-run in_api "$X" claim "$H/exchange/work/projects/api/alice/$(basename "$Q")"; assert_eq "$RC" 1 "repeated claim"; assert_contains "$OUT" "already with an agent"
+run in_api "$X" claim "$Q"
 # whoever pushes first wins the race
-git -C "$W2" pull -q; printf -- '---\nfrom: carol/web\nto: @api\nkind: task\ndate: 2026-09-09T11:00:00Z\n---\n# Second task\n' > "$W2/projects/api/20260909-110000_carol_second.md"
-( cd "$W2" && git add -A && git commit -qm t && git push -q ); "$X" sync >/dev/null
-git -C "$W2" mv projects/api/20260909-110000_carol_second.md projects/api/bob/ 2>/dev/null || { mkdir -p "$W2/projects/api/bob"; git -C "$W2" mv projects/api/20260909-110000_carol_second.md projects/api/bob/; }
-( cd "$W2" && git commit -qm claim && git push -q )
+put projects/api/20260909-110000_carol_second.md carol/web @api task "Second task"; "$X" sync >/dev/null
+git -C "$W2" mv projects/api/20260909-110000_carol_second.md projects/api/bob/; ( cd "$W2" && git commit -qm claim && git push -q )
 run in_api "$X" claim "$H/exchange/work/projects/api/20260909-110000_carol_second.md"
 assert_eq "$RC" 1 "lost race"; assert_contains "$OUT" "already taken by bob"
 [ -z "$(git -C "$H/exchange/work" status --porcelain)" ] && ok "the clone is clean after losing" || fail "the clone is dirty" "$(git -C "$H/exchange/work" status --short)"
-D=$(ls "$H/exchange/work/projects/api/alice/"*queue.md)
-run in_api "$X" done "$D"; assert_eq "$RC" 0 "done rc"; assert_contains "$OUT" "projects/api/alice/done/"
-run in_api "$X" inbox; assert_not_contains "$OUT" "A task in the api queue"; ok "a closed task leaves the inbox"
-N=$(ls "$H/exchange/work/all/"*friday.md)
-run in_api "$X" done "$N"; assert_eq "$RC" 1 "a message can't be closed"; assert_contains "$OUT" "xchg seen"
-run in_api "$X" claim "$N"; assert_eq "$RC" 1 "a message can't be claimed"
+run in_api "$X" done "$(ls "$H/exchange/work/projects/api/alice/"*queue.md)"
+run in_api "$X" inbox; assert_not_contains "$OUT" "A task in the api queue"   # a closed task leaves the inbox
+run in_api "$X" done "$(ls "$H/exchange/work/all/"*friday.md)"; assert_eq "$RC" 1 "a message can't be closed"
 
-t "reply and thread"
+t "reply, thread, sent"
 P=$(ls "$H/exchange/work/people/alice/"*personal.md)
-run in_api "$X" reply "$P" ok <<< '# Done it'; assert_eq "$RC" 0 "reply rc"
-assert_contains "$OUT" "sent: work:projects/api/bob/"; ok "the reply goes to the sender's agent, not the person"
+run in_api "$X" reply "$P" ok <<< '# Done it'; assert_contains "$OUT" "sent: work:projects/api/bob/"   # the reply goes to the sender's agent, not the person
 R=$(ls -t "$H/exchange/work/projects/api/bob/"*ok.md | head -1)
-assert_contains "$(cat "$R")" "re: $(basename "$P")"
-assert_eq "$(sed -n 's/^kind: //p' "$R")" "message" "a reply is a message, even to a task"
-run in_api "$X" reply "$P" more --task <<< '# One more thing'; R2=$(ls -t "$H/exchange/work/projects/api/bob/"*more.md | head -1)
-assert_eq "$(sed -n 's/^kind: //p' "$R2")" "task" "reply --task makes a task"
-# the status column is compared exactly: broken output contains both words inside the script text
-run in_api "$X" thread "$R"; assert_contains "$OUT" "Personal request"; assert_contains "$OUT" "Done it"
-assert_not_contains "$OUT" "syntax error"; assert_eq "$(awk '/Personal request/ {print $3}' <<< "$OUT")" "open" "status of an open task"
-run in_api "$X" done "$P" ; run in_api "$X" thread "$R"
-assert_not_contains "$OUT" "syntax error"; assert_eq "$(awk '/Personal request/ {print $3}' <<< "$OUT")" "closed" "a closed task is read from history"
+run in_api "$X" done "$P"; run in_api "$X" thread "$R"
+assert_eq "$(awk '/Personal request/ {print $3}' <<< "$OUT")" "closed" "a closed task is read from history"
+run in_api "$X" reply "$R" again <<< '# Forgot to say'; assert_contains "$OUT" "sent: work:projects/api/bob/"   # a reply to my own message goes on to its recipient
 T1=$(ls "$H/exchange/work/projects/api/bob/"*task1.md)
 run in_api "$X" reply "$T1" ping <<< '# Any news?'   # the sender's own follow-up is not an answer
 run in_api "$X" sent; assert_eq "$(awk '/A task for Bob/ {print $4}' <<< "$OUT")" "waiting" "an unanswered task waits"
-assert_not_contains "$OUT" "Done it"; assert_not_contains "$OUT" "Release 2.3"; ok "sent lists tasks only, not messages"
-git -C "$W2" pull -q
-printf -- '---\nfrom: bob/api\nto: @api:alice\nkind: message\ndate: 2026-09-09T12:00:00Z\nre: %s\n---\n# Task1 is done\n' "$(basename "$T1")" > "$W2/projects/api/alice/20260909-120000_bob-api_task1-done.md"
-( cd "$W2" && git add -A && git commit -qm task1-done && git push -q )
+assert_not_contains "$OUT" "Release 2.3"   # sent lists tasks only, not messages
+put projects/api/alice/20260909-120000_bob-api_task1-done.md bob/api @api:alice message "Task1 is done" "$(basename "$T1")"
 run in_api "$X" sent; assert_eq "$(awk '/A task for Bob/ {print $4}' <<< "$OUT")" "replied" "the recipient's answer marks the task replied"
-assert_contains "$OUT" "xchg done"; ok "sent separates answered tasks and says how to close them"
-run in_api "$X" reply "$R" again <<< '# Forgot to say'; assert_eq "$RC" 0 "reply to my own message"
-assert_contains "$OUT" "sent: work:projects/api/bob/"; ok "a reply to my own message goes on to its recipient, not back to me"
-R3=$(ls -t "$H/exchange/work/projects/api/bob/"*again.md | head -1); assert_contains "$(cat "$R3")" "re: $(basename "$R")"
-git -C "$W2" pull -q
-printf -- '---\nfrom: carol/web\nto: @api:alice\nkind: message\ndate: 2026-09-09T12:00:00Z\n---\n# Lunch at noon?\n' > "$W2/projects/api/alice/20260909-120000_carol_lunch.md"
-( cd "$W2" && git add -A && git commit -qm lunch && git push -q )
-run in_api "$X" inbox; assert_contains "$OUT" "Lunch at noon?"
-run in_api "$X" reply "$H/exchange/work/projects/api/alice/20260909-120000_carol_lunch.md" lunch-yes <<< '# Yes'; assert_eq "$RC" 0 "reply to a message"
-run in_api "$X" inbox; assert_not_contains "$OUT" "Lunch at noon?"; ok "an answered message is read"
-run in_api "$X" inbox --history; assert_contains "$OUT" "Lunch at noon?"
+put projects/api/alice/20260909-120000_carol_lunch.md carol/web @api:alice message "Lunch at noon?"
+run in_api "$X" reply "$H/exchange/work/projects/api/alice/20260909-120000_carol_lunch.md" lunch-yes <<< '# Yes'
+run in_api "$X" inbox; assert_not_contains "$OUT" "Lunch at noon?"   # an answered message is read
 
 t "wait: waiting without a human"
-git -C "$W2" pull -q
-run in_api "$X" inbox; assert_eq "$RC" 0 "inbox before waiting"
-run in_api "$X" wait --timeout 1 --interval 1; assert_eq "$RC" 3 "what was shown doesn't wake"; assert_contains "$OUT" "no new messages"
-( sleep 1; git -C "$W2" pull -q
-  printf -- '---\nfrom: bob/api\nto: @api:alice\nkind: task\ndate: 2026-09-10T09:00:00Z\n---\n# Wake up\n' > "$W2/projects/api/alice/20260910-090000_bob_wake.md"
-  ( cd "$W2" && git add -A && git commit -qm wake && git push -q ) ) &
-BG=$!
-run in_api "$X" wait --timeout 30 --interval 1; wait "$BG" 2>/dev/null || true
-assert_eq "$RC" 0 "a new message wakes"; assert_contains "$OUT" "Wake up"; assert_contains "$OUT" "xchg: 1 new message"
-run in_api "$X" wait --timeout 1 --interval 1; assert_eq "$RC" 3 "the same message doesn't wake again"
+run in_api "$X" inbox >/dev/null
+run in_api "$X" wait --timeout 1 --interval 1; assert_eq "$RC" 3 "what was shown doesn't wake"
+( sleep 1; put projects/api/alice/20260910-090000_bob_wake.md bob/api @api:alice task "Wake up" ) &
+BG=$!; run in_api "$X" wait --timeout 30 --interval 1; wait "$BG" 2>/dev/null || true
+assert_eq "$RC" 0 "a new message wakes"; assert_contains "$OUT" "Wake up"
 run in_api "$X" send @api:alice note-to-self <<< '# A note to self'
 run in_api "$X" wait --timeout 1 --interval 1; assert_eq "$RC" 3 "my own message doesn't wake"
-git -C "$W2" pull -q
-printf -- '---\nfrom: carol/web\nto: @api\nkind: task\ndate: 2026-09-10T09:10:00Z\n---\n# Queue for claim\n' > "$W2/projects/api/20260910-091000_carol_q2.md"
-( cd "$W2" && git add -A && git commit -qm q2 && git push -q )
-run in_api "$X" inbox; assert_contains "$OUT" "Queue for claim"
-run in_api "$X" claim "$H/exchange/work/projects/api/20260910-091000_carol_q2.md"; assert_eq "$RC" 0 "claim of a shown task"
-run in_api "$X" wait --timeout 1 --interval 1; assert_eq "$RC" 3 "a claimed task moved, but doesn't wake again"
-run in_api "$X" wait --timeout abc; assert_eq "$RC" 2 "bad timeout is a usage error"
 
 t "the client file was rewritten in place while a command ran"
-assert_eq "$(tail -n 1 "$X")" 'main "$@"; exit $?' "the last line calls main and exits"
 XC="$SB/client-copy"; mkdir -p "$XC/bin" "$XC/hub"; cp "$X" "$XC/bin/xchg"; cp "$ROOT/hub/README.md" "$XC/hub/"
 ( cd "$SB/repos/api" && "$XC/bin/xchg" wait --interval 1 > "$SB/rw.out" 2> "$SB/rw.err"; echo $? > "$SB/rw.rc" ) &
 BG=$!; sleep 2
 { head -n 1 "$XC/bin/xchg"; printf '# %0200d\n' 0; tail -n +2 "$XC/bin/xchg"; } > "$XC/new"; cat "$XC/new" > "$XC/bin/xchg"   # same inode, as an editor does
-git -C "$W2" pull -q
-printf -- '---\nfrom: bob/api\nto: @api:alice\nkind: task\ndate: 2026-09-11T08:00:00Z\n---\n# While the client was rewritten\n' > "$W2/projects/api/alice/20260911-080000_bob_rewrite.md"
-( cd "$W2" && git add -A && git commit -qm rewrite && git push -q )
+put projects/api/alice/20260911-080000_bob_rewrite.md bob/api @api:alice task "While the client was rewritten"
 wait "$BG" 2>/dev/null || true
 assert_eq "$(cat "$SB/rw.rc")" 0 "the command exited with its own code"
 assert_eq "$(cat "$SB/rw.err")" "" "no script fragments in stderr"
-assert_contains "$(cat "$SB/rw.out")" "While the client was rewritten"
 
-t "mute and hooks: someone else's message doesn't wake or repeat"
-git -C "$W2" pull -q
-printf -- '---\nfrom: carol/web\nto: alice\nkind: task\ndate: 2026-09-10T10:00:00Z\n---\n# Not for the api agent\n' > "$W2/people/alice/20260910-100000_carol_notmine.md"
-( cd "$W2" && git add -A && git commit -qm notmine && git push -q )
-run in_api hook UserPromptSubmit "$X" inbox --brief; assert_contains "$OUT" "Not for the api agent"; ok "the hook shows a new message"
-# a hook gets JSON with additionalContext: the one form every supported harness adds to the model context
+t "hooks and mute"
+put people/alice/20260910-100000_carol_notmine.md carol/web alice task "Not for the api agent"
+run in_api hook UserPromptSubmit "$X" inbox --brief
 assert_eq "$(jq -r .hookSpecificOutput.hookEventName <<< "$OUT")" UserPromptSubmit "hook output is valid JSON with the event name"
-assert_contains "$(jq -r .hookSpecificOutput.additionalContext <<< "$OUT")" $'new message (xchg inbox; xchg seen <address> for what needs no action):\n'
 run in_api hook UserPromptSubmit "$X" inbox --brief; assert_eq "$OUT" "" "a repeated hook on the same stays silent (0 bytes)"
-run in_api hook SessionStart "$X" inbox --brief; assert_contains "$OUT" "in the inbox"; assert_contains "$OUT" "Not for the api agent"
-ok "session start shows what is open again"
-git -C "$W2" pull -q
-printf -- '---\nfrom: bob/api\nto: @api:alice\nkind: task\ndate: 2026-09-10T09:50:00Z\n---\n# Quote "this" and back\\slash\n' > "$W2/projects/api/alice/20260910-095000_bob_quote.md"
-( cd "$W2" && git add -A && git commit -qm quote && git push -q )
-run in_api hook BeforeAgent "$X" inbox --brief; assert_eq "$(jq -r .hookSpecificOutput.hookEventName <<< "$OUT")" BeforeAgent "the other prompt event name works the same"
-assert_contains "$(jq -r .hookSpecificOutput.additionalContext <<< "$OUT")" 'Quote "this" and back\slash'; ok "quotes and backslashes are escaped"
-run in_api hook BeforeAgent "$X" inbox --brief; assert_eq "$OUT" "" "and stays silent on a repeat (0 bytes)"
-run in_api hook SessionStart "$X" inbox --brief; assert_contains "$OUT" '"hookEventName":"SessionStart"'
-run in_api bash -c "'$X' inbox --brief < /dev/null"; assert_not_contains "$OUT" "hookSpecificOutput"; ok "without hook JSON the output is plain text"
-# other harnesses take the same text in a field of their own; the client is told which by --hook-format
-run in_api hook SessionStart "$X" inbox --brief --hook-format hermes
-assert_eq "$(jq -r .context <<< "$OUT" | head -1 | cut -c1-5)" "xchg:" "hermes gets the text in .context"
-assert_not_contains "$OUT" "hookSpecificOutput"
-run in_api bash -c "'$X' inbox --brief --session --hook-format cline < /dev/null"
-assert_contains "$(jq -r .contextModification <<< "$OUT")" "in the inbox" "cline gets it in .contextModification, and --session shows everything open"
-run in_api hook SessionStart "$X" inbox --brief --hook-format text; assert_not_contains "$OUT" "{"; ok "a harness without hook JSON takes plain text"
-run in_api hook SessionStart "$X" inbox --brief --hook-format nosuch; assert_eq "$RC" 1 "an unknown hook format is an error"
+run in_api hook SessionStart "$X" inbox --brief; assert_contains "$OUT" "Not for the api agent"   # session start shows what is open again
+put projects/api/alice/20260910-095000_bob_quote.md bob/api @api:alice task 'Quote "this" and back\slash'
+run in_api hook BeforeAgent "$X" inbox --brief
+assert_contains "$(jq -r .hookSpecificOutput.additionalContext <<< "$OUT")" 'Quote "this" and back\slash'   # quotes and backslashes are escaped
 NM="$H/exchange/work/people/alice/20260910-100000_carol_notmine.md"
-run in_api "$X" mute; assert_eq "$RC" 2 "mute without a file is a usage error"
-run in_api "$X" mute "$NM"; assert_eq "$RC" 0 "mute"; assert_contains "$OUT" "muted for agent @api"
-run in_api "$X" inbox; assert_not_contains "$OUT" "Not for the api agent"; ok "not visible in this agent's inbox"
-run in_api "$X" inbox --history; assert_contains "$OUT" "Not for the api agent"
-run in_api hook SessionStart "$X" inbox --brief; assert_not_contains "$OUT" "Not for the api agent"; ok "nor on session start"
-run in_web "$X" inbox; assert_contains "$OUT" "Not for the api agent"; ok "another agent of the same person sees it"
-[ -f "$NM" ] && ok "the message in the hub is untouched" || fail "mute changed the hub"
-git -C "$W2" pull -q
-printf -- '---\nfrom: carol/web\nto: @web\nkind: task\ndate: 2026-09-10T10:05:00Z\n---\n# Web task\n' > "$W2/projects/web/20260910-100500_carol_webtask.md"
-( cd "$W2" && git add -A && git commit -qm webtask && git push -q )
-run in_api hook UserPromptSubmit "$X" inbox --brief; assert_contains "$OUT" "1 more message in other projects"
-run in_api hook UserPromptSubmit "$X" inbox --brief; assert_not_contains "$OUT" "in other projects"; ok "the other-project counter doesn't repeat"
-git -C "$W2" pull -q
-printf -- '---\nfrom: carol/web\nto: @api\nkind: task\ndate: 2026-09-10T10:10:00Z\n---\n# Mute first, claim later\n' > "$W2/projects/api/20260910-101000_carol_later.md"
-( cd "$W2" && git add -A && git commit -qm later && git push -q ); "$X" sync >/dev/null
-LT="$H/exchange/work/projects/api/20260910-101000_carol_later.md"
-run in_api "$X" mute "$LT"; assert_eq "$RC" 0 "mute a queued task"
-run in_api "$X" claim "$LT"; assert_eq "$RC" 0 "claim a muted task"
-run in_api "$X" inbox; assert_contains "$OUT" "Mute first, claim later"; ok "a task taken for myself is visible again"
+run in_api "$X" mute "$NM"; run in_api "$X" inbox; assert_not_contains "$OUT" "Not for the api agent"
+run in_web "$X" inbox; assert_contains "$OUT" "Not for the api agent"   # mute is for this agent only
 
 t "a reply in the personal address goes to the agent that has seen the original"
-in_tool() { ( cd "$SB/repos/tool" && "$X" "$@" ); }
-run in_tool post bob ask <<< '# A question from tool'; assert_eq "$RC" 0 "a message from a repository that is not a project"
-assert_contains "$OUT" "without a project"; assert_contains "$OUT" "xchg projects add --hub work"
+run in_tool post bob ask <<< '# A question from tool'
 ASK=$(basename "$(ls "$H/exchange/work/people/bob/"*ask.md)")
-assert_eq "$(sed -n 's/^from: //p' "$H/exchange/work/people/bob/$ASK")" "alice" "it is signed with the person alone"
-run in_api "$X" post bob fine <<< '# From a project'; assert_not_contains "$OUT" "without a project"
-run bash -c "cd / && '$X' post bob out <<< '# Outside a repository'"; assert_not_contains "$OUT" "without a project"; ok "no agent, nothing to warn about"
-git -C "$W2" pull -q; NOW=$(date -u +%Y%m%d-%H%M%S)
-printf -- '---\nfrom: bob/api\nto: alice\nkind: message\ndate: 2026-09-10T11:00:00Z\nre: %s\n---\n# Answer for tool\n' "$ASK" > "$W2/people/alice/${NOW}_bob-api_answer.md"
-printf -- '---\nfrom: bob/api\nto: alice\nkind: message\ndate: 2026-09-10T11:00:00Z\nre: 20260101-000000_alice_elsewhere.md\n---\n# Answer to another machine\n' > "$W2/people/alice/${NOW}_bob-api_unknown.md"
-( cd "$W2" && git add -A && git commit -qm answers && git push -q )
-run in_api "$X" inbox; assert_not_contains "$OUT" "Answer for tool"; ok "another agent's reply is not in this agent's inbox"
-assert_contains "$OUT" "in other projects (xchg inbox --all)"; assert_contains "$OUT" "Answer to another machine"
-ok "a reply nobody here has seen the original of is shown to every agent"
-run in_api "$X" wait --timeout 1; assert_eq "$RC" 3 "and it doesn't wake this agent"
-run in_api "$X" inbox --all; assert_contains "$OUT" "Answer for tool"; ok "--all shows it"
-run in_tool inbox; assert_contains "$OUT" "Answer for tool"; ok "the agent that sent the original gets the reply"
+put "people/alice/$(date -u +%Y%m%d-%H%M%S)_bob-api_answer.md" bob/api alice message "Answer for tool" "$ASK"
+run in_api "$X" inbox; assert_not_contains "$OUT" "Answer for tool"   # another agent's reply is not in this agent's inbox
+run in_tool inbox; assert_contains "$OUT" "Answer for tool"   # the agent that sent the original gets the reply
 
-t "second hub: my own agents between themselves"
-run "$X" hub init me --login alice; assert_eq "$RC" 0 "personal hub"
-run in_api "$X" seen me; assert_eq "$RC" 1 "me in two hubs is ambiguous"; assert_contains "$OUT" "exists in hubs: work (4 people), me (only you)"
-run in_api "$X" seen work:me; assert_eq "$RC" 0 "with a hub prefix it is unambiguous"; assert_contains "$OUT" "read: work:alice"
-run in_api "$X" projects add api --hub me; assert_eq "$RC" 0 "project api in the personal hub"
-run in_web "$X" projects add web --hub me; assert_eq "$RC" 0 "project web in the personal hub"
-run in_api "$X" send me:@web:alice handoff <<< '# Continue the migration'; assert_eq "$RC" 0 "an agent writes to my other agent"
-assert_contains "$OUT" "sent: me:projects/web/alice/"
-run in_web "$X" inbox; assert_contains "$OUT" "Continue the migration"; assert_contains "$OUT" "me"
-run in_api "$X" inbox; assert_not_contains "$OUT" "Continue the migration"; ok "another address isn't shown in this session"
-HO=$(ls "$H/exchange/me/projects/web/alice/"*handoff.md)
-run in_web "$X" reply "$HO" started <<< '# Started'; assert_eq "$RC" 0 "my web agent answers my api agent"
-assert_contains "$OUT" "sent: me:projects/api/alice/"; ok "the reply goes to the agent that wrote, not back to the replier: the login is shared, the agent is not"
-run in_api "$X" inbox; assert_contains "$OUT" "Started"
-run in_api "$X" send @api:alice self <<< '# A note to self'; assert_contains "$OUT" "exists in hubs: work (4 people), me (only you)"
-ok "the same address in two hubs is an error with a list"
-run in_api "$X" send me:@api:alice self <<< '# A note to self'; assert_eq "$RC" 0 "a hub prefix resolves the ambiguity"
-
-t "forward between hubs"
+t "second hub: my own agents under one login"
+run "$X" hub init me --login alice
+run in_api "$X" projects add api --hub me; run in_web "$X" projects add web --hub me
+run in_api "$X" send me:@web:alice handoff <<< '# Continue the migration'
+run in_web "$X" reply "$(ls "$H/exchange/me/projects/web/alice/"*handoff.md)" started <<< '# Started'
+assert_contains "$OUT" "sent: me:projects/api/alice/"   # the reply goes to the agent that wrote: the login is shared, the agent is not
+run in_api "$X" send @api:alice self <<< '# A note to self'; assert_eq "$RC" 1 "an address in two hubs is refused"
+assert_contains "$OUT" "git config xchg.hub work"
+git -C "$SB/repos/api" config xchg.hub me
+run in_api "$X" send @api:alice self <<< '# A note to self'; assert_contains "$OUT" "sent: me:projects/api/alice/"   # git config xchg.hub decides
+git -C "$SB/repos/api" config --unset xchg.hub
 S=$(ls "$H/exchange/work/projects/api/alice/"*schema.md)
-run in_api "$X" forward "$S" me:@api:alice --note "moving it to my hub"; assert_eq "$RC" 0 "forward rc"
-FW=$(ls -t "$H/exchange/me/projects/api/alice/"*fwd*.md | head -1)
-assert_contains "$(cat "$FW")" "forwarded_from: work/projects/api/alice/"; assert_contains "$(cat "$FW")" "moving it to my hub"
-assert_contains "$(cat "$FW")" "--- forwarded from work (from bob/api) ---"
-[ -e "$S" ] && ok "the original is untouched" || fail "the original is gone"
+run in_api "$X" forward "$S" me:@api:alice --note "moving it"
+assert_contains "$(cat "$(ls -t "$H/exchange/me/projects/api/alice/"*fwd*.md | head -1)")" "forwarded_from: work/projects/api/alice/"
 
-t "attachments: files under their own refs, fetched on demand"
+t "attachments arrive byte for byte"
 printf '\x89PNG\r\n\x1a\n\x00\x01binary' > "$SB/shot.png"
 printf '<html>\r\n<body>crlf stays</body>\r\n</html>\r\n' > "$SB/page.html"
 git config --global core.autocrlf true   # the setting that would rewrite line endings if bytes went through filters
 run in_api "$X" send work:@api:alice pics --attach "$SB/shot.png" --attach "$SB/page.html" <<< '# Two files'
-assert_eq "$RC" 0 "send with attachments"
 M=$(ls -t "$H/exchange/work/projects/api/alice/"*pics.md | head -1)
-A=$(sed -n 's/^attachments: //p' "$M")
-assert_contains "$A" "/shot.png"; assert_contains "$A" "/page.html"; ok "the message carries links only"
-HP=$(printf '%s\n' $A | grep page.html | sed 's#^att:##; s#/.*##')
-assert_eq "$(git -C "$SB/bare-work" cat-file -t "refs/xchg/att/$HP^{tree}" 2>/dev/null)" tree "the file sits in the hub under refs/xchg/att/<hash>"
-git -C "$W2" pull -q
-[ -z "$(git -C "$W2" for-each-ref refs/xchg)" ] && ok "a normal pull doesn't bring attachment refs" || fail "pull brought refs/xchg"
-git -C "$W2" cat-file -e "$HP" 2>/dev/null && fail "a normal pull brought the file" || ok "and doesn't bring the file"
-run in_api "$X" inbox; assert_contains "$OUT" "Two files [+2 files]"
 # file:// and not a bare path: a clone from a plain path copies the whole object store, like no server does
-run "$X" hub add work2 "file://$SB/bare-work" --path "$SB/w3" --login alice; assert_eq "$RC" 0 "a second clone of the same hub"
-assert_contains "$OUT" "hub work2: the contact book (xchg who):"; assert_contains "$OUT" "  carol  Кэрол"; ok "connecting a hub introduces its contact book"
-M2="work2:${M#$H/exchange/work/}"
-run "$X" attachments "$M2"; assert_contains "$OUT" "not downloaded"
-run "$X" get "$M2"; assert_eq "$RC" 0 "get fetches the files from the hub"
-P=$(printf '%s\n' "$OUT" | grep page.html); S=$(printf '%s\n' "$OUT" | grep shot.png)
-cmp -s "$P" "$SB/page.html" && ok "an html page arrives byte for byte, CRLF included" || fail "page.html changed on the way"
-cmp -s "$S" "$SB/shot.png" && ok "a binary file arrives byte for byte" || fail "shot.png changed on the way"
-run "$X" attachments "$M2"; assert_contains "$OUT" "bytes"
-run "$X" get "att:$HP/page.html" --hub work2 --to "$SB/dl"; assert_eq "$OUT" "$SB/dl/page.html" "get by link, into a chosen directory"
+run "$X" hub add work2 "file://$SB/bare-work" --path "$SB/w3" --login alice
+run "$X" get "work2:${M#$H/exchange/work/}"
+cmp -s "$(grep page.html <<< "$OUT")" "$SB/page.html" && ok "an html page arrives byte for byte, CRLF included" || fail "page.html changed on the way"
+cmp -s "$(grep shot.png <<< "$OUT")" "$SB/shot.png" && ok "a binary file arrives byte for byte" || fail "shot.png changed on the way"
+HP=$(sed -n 's/^attachments: //p' "$M" | tr ' ' '\n' | grep page.html | sed 's#^att:##; s#/.*##')
 run "$X" get "att:$HP/../../escape.html" --hub work2 --to "$SB/dl"; assert_eq "$OUT" "$SB/dl/escape.html" "a name can't leave the directory"
-run "$X" get "att:nothex/x" --hub work2; assert_eq "$RC" 2 "a malformed link is a usage error"
-run "$X" get "att:0000000000000000000000000000000000000000/x" --hub work2; assert_eq "$RC" 1 "an unknown attachment is an error"
 git config --global --unset core.autocrlf
 n0=$(ls "$H/exchange/work/projects/api/alice/" | wc -l)
-run in_api "$X" send work:@api:alice nofile --attach "$SB/nosuch.png" <<< '# Missing'
-assert_eq "$RC" 1 "a missing file stops the send"
+run in_api "$X" send work:@api:alice nofile --attach "$SB/nosuch.png" <<< '# Missing'; assert_eq "$RC" 1 "a missing file stops the send"
 assert_eq "$(ls "$H/exchange/work/projects/api/alice/" | wc -l)" "$n0" "and no message is written"
-run in_api "$X" attach "$SB/shot.png" --hub work; assert_contains "$OUT" "att:"; assert_contains "$OUT" "/shot.png"
-ok "attach prints a link to paste into a message"
-printf 'x' > "${SB}/Отчёт — итог  (v2).txt"
-run in_api "$X" attach "${SB}/Отчёт — итог  (v2).txt" --hub work
-assert_contains "$OUT" "/Отчёт_—_итог_v2_.txt" "a name in another alphabet stays readable, runs of spaces and signs become one _"
-run "$X" get "$OUT" --hub work --to "$SB/names"; assert_eq "$OUT" "$SB/names/Отчёт_—_итог_v2_.txt" "and the file is saved under that name"
-run in_api "$X" forward "$M" me:@api:alice; assert_eq "$RC" 0 "forward a message with attachments"
-FA=$(ls -t "$H/exchange/me/projects/api/alice/"*fwd-pics*.md | head -1)
-assert_contains "$(cat "$FA")" "attachments: att:"
-run in_api "$X" get "me:${FA#$H/exchange/me/}" --to "$SB/fwd"; cmp -s "$SB/fwd/page.html" "$SB/page.html" && ok "the files crossed into the other hub with the message" || fail "forwarded attachments are missing"
-# a hub that refuses attachment refs says why, and the message is not written
-git init -q --bare "$SB/bare-strict"; git -C "$SB/bare-work" push -q "$SB/bare-strict" main
-printf '#!/bin/sh\nwhile read o n r; do case "$r" in refs/heads/main) ;; *) echo "xchg: the hub lives on main only"; exit 1;; esac; done\n' > "$SB/bare-strict/hooks/pre-receive"; chmod +x "$SB/bare-strict/hooks/pre-receive"
-run "$X" hub add strict "$SB/bare-strict" --path "$SB/w4" --login alice
-n0=$(find "$SB/w4" -name '*.md' | wc -l)
-run in_api "$X" send strict:@api:alice refused --attach "$SB/page.html" <<< '# Refused'
-assert_eq "$RC" 1 "the hub refused the attachment"; assert_contains "$OUT" "the hub lives on main only"
-assert_eq "$(find "$SB/w4" -name '*.md' | wc -l)" "$n0" "nothing is sent"
-run "$X" hub rm strict >/dev/null; run "$X" hub rm work2 >/dev/null
+run "$X" hub rm work2 >/dev/null; run "$X" hub rm me >/dev/null
 
-t "hub upgrade: the skeleton follows the client"
+t "hub upgrade"
 git init -q --bare "$SB/bare-up"; run "$X" hub init up --remote "$SB/bare-up" --path "$SB/up" --login alice
-V=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$ROOT/harness/claude-code/.claude-plugin/plugin.json")
-EXP=$(awk -v v="$V" '{print} /^contract: / && !d {print "template: " v; d = 1}' "$ROOT/hub/README.md")
-assert_eq "$(cat "$SB/up/README.md")" "$EXP" "hub init writes the template with the client release"
-# an older skeleton: the rules of another release, no template line, no .gitattributes
-printf -- '---\ncontract: 6\n---\n# Exchange hub\n\nOld rules.\n' > "$SB/up/README.md"; git -C "$SB/up" rm -q .gitattributes
-git -C "$SB/up" commit -qam old; git -C "$SB/up" push -q
+UV=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$ROOT/harness/claude-code/.claude-plugin/plugin.json")
+EXP=$(awk -v v="$UV" '{print} /^contract: / && !d {print "template: " v; d = 1}' "$ROOT/hub/README.md")
+printf -- '---\ncontract: 6\n---\n# Exchange hub\n\nOld rules.\n' > "$SB/up/README.md"
 printf -- '---\nfrom: bob/api\nto: all\nkind: message\ndate: 2026-09-09T10:00:00Z\n---\n# Keep me\n' > "$SB/up/all/20260909-100000_bob_keep.md"
-git -C "$SB/up" add -A; git -C "$SB/up" commit -qm msg; git -C "$SB/up" push -q
-n0=$(git -C "$SB/up" rev-list --count HEAD)
-run "$X" hub upgrade up; assert_eq "$RC" 0 "upgrade rc"; assert_contains "$OUT" "upgraded to xchg $V"
-assert_eq "$(cat "$SB/up/README.md")" "$EXP" "the README is the current template"
-[ -f "$SB/up/.gitattributes" ] && ok "the missing .gitattributes is back" || fail ".gitattributes was not restored"
-assert_eq "$(git -C "$SB/up" rev-list --count HEAD)" "$((n0+1))" "one commit"
-assert_eq "$(git -C "$SB/up" log -1 --format=%s)" "[hub] upgrade to $V (contract 6)" "the commit says what it is"
-assert_eq "$(git -C "$SB/bare-up" rev-parse main)" "$(git -C "$SB/up" rev-parse HEAD)" "and it is pushed"
+git -C "$SB/up" add -A; git -C "$SB/up" commit -qm old; git -C "$SB/up" push -q
+run "$X" hub upgrade up; assert_eq "$(cat "$SB/up/README.md")" "$EXP" "the README is the current template"
 [ -f "$SB/up/all/20260909-100000_bob_keep.md" ] && ok "messages are not touched" || fail "upgrade removed a message"
-run "$X" hub upgrade up; assert_eq "$RC" 0 "a repeated upgrade"; assert_contains "$OUT" "up to date"
-assert_eq "$(git -C "$SB/up" rev-list --count HEAD)" "$((n0+1))" "makes no commit"
-# refusals leave the hub as it is
-up_set() { sed -i "$1" "$SB/up/README.md"; git -C "$SB/up" commit -qam set; git -C "$SB/up" push -q; git -C "$SB/up" rev-parse HEAD; }
-S=$(up_set 's/^template: .*/template: 99.0.0/')
-run "$X" hub upgrade up; assert_eq "$RC" 1 "rules from a newer client are not rolled back"; assert_contains "$OUT" "newer than this"
+sed -i 's/^contract: 6/contract: 7/' "$SB/up/README.md"; git -C "$SB/up" commit -qam set; git -C "$SB/up" push -q; S=$(git -C "$SB/up" rev-parse HEAD)
+run "$X" hub upgrade up --contract; assert_eq "$RC" 1 "a newer contract is refused, even with --contract"
 assert_eq "$(git -C "$SB/up" rev-parse HEAD)" "$S" "the hub is unchanged"
-S=$(up_set 's/^contract: 6/contract: 7/')
-run "$X" hub upgrade up --contract; assert_eq "$RC" 1 "a newer contract is refused, even with --contract"; assert_contains "$OUT" "contract 7 is newer"
-assert_eq "$(git -C "$SB/up" rev-parse HEAD)" "$S" "the hub is unchanged"
-S=$(up_set 's/^contract: 7/contract: 5/; s/^template: .*/template: 0.1.0/')
-run "$X" hub upgrade up; assert_eq "$RC" 1 "an older contract needs --contract"; assert_contains "$OUT" "xchg hub upgrade up --contract"
-assert_eq "$(git -C "$SB/up" rev-parse HEAD)" "$S" "the hub is unchanged"
-run "$X" hub upgrade up --contract; assert_eq "$RC" 0 "--contract moves the hub"; assert_contains "$OUT" "contract 5 -> 6"
-assert_eq "$(cat "$SB/up/README.md")" "$EXP" "to the current template"
-run "$X" hub upgrade nosuch; assert_eq "$RC" 1 "an unknown hub"
 run "$X" hub rm up >/dev/null
 
-t "failed push: exit 4, sync delivers"
+t "a push that didn't go through"
 mv "$SB/bare-work" "$SB/bare-work.off"
 run in_api "$X" send bob offline <<< '# Sent without network'; assert_eq "$RC" 4 "send to an unreachable hub exits 4"
-assert_contains "$OUT" "sent: work:people/bob/"; assert_contains "$OUT" "xchg sync will send it"
-run in_api "$X" sync; assert_eq "$RC" 4 "sync while the hub is down exits 4"; assert_contains "$OUT" "not sent to origin"
+run in_api "$X" inbox --brief; assert_eq "$RC" 0 "an unreachable hub doesn't break inbox"
 mv "$SB/bare-work.off" "$SB/bare-work"
-run in_api "$X" sync; assert_eq "$RC" 0 "sync after the hub is back exits 0"; assert_not_contains "$OUT" "not sent"
-git -C "$W2" pull -q; [ -n "$(ls "$W2/people/bob/"*_offline.md 2>/dev/null)" ] && ok "the message reached the hub" || fail "sync didn't deliver the message"
-
-t "the hub refuses a push with an xchg: line"
+run in_api "$X" sync
+git -C "$W2" pull -q; [ -n "$(ls "$W2/people/bob/"*_offline.md 2>/dev/null)" ] && ok "sync delivered the message" || fail "sync didn't deliver the message"
 printf '#!/bin/sh\necho "xchg: refusal test" >&2\nexit 1\n' > "$SB/bare-work/hooks/pre-receive"; chmod +x "$SB/bare-work/hooks/pre-receive"
 WH="$H/exchange/work"; HEAD0=$(git -C "$WH" rev-parse HEAD)
-run in_api "$X" send bob refused <<< '# Refused'; assert_eq "$RC" 1 "hub refusal exits 1, no retries"
-assert_contains "$OUT" "xchg: refusal test"; assert_contains "$OUT" "[hub work]"; assert_not_contains "$OUT" "xchg sync will send it"
+run in_api "$X" send bob refused <<< '# Refused'; assert_eq "$RC" 1 "a hub refusal exits 1, no retries"
 assert_eq "$(git -C "$WH" rev-parse HEAD)" "$HEAD0" "the local commit is rolled back"
-[ -z "$(ls "$WH/people/bob/"*_refused.md 2>/dev/null)" ] && ok "no message file in the clone" || fail "the message stayed in the clone"
-# sync with a stuck local commit shows the reason for the refusal
-touch "$WH/stuck"; git -C "$WH" add stuck; git -C "$WH" commit -qm stuck
-run in_api "$X" sync; assert_eq "$RC" 4 "sync on refusal exits 4"; assert_contains "$OUT" "hub work refused unsent commits: refusal test"
-git -C "$WH" reset -q --hard "$HEAD0"; rm "$SB/bare-work/hooks/pre-receive"
-run in_api "$X" send bob accepted <<< '# After removing the hook'; assert_eq "$RC" 0 "without the hook send goes through"
-
-t "contacts, secrets, contract, unreachable hub"
-run "$X" contact --name "Алиса Иванова" --aliases "аля"; assert_contains "$OUT" "| alice | Алиса Иванова | аля |"
-run "$X" contact rm erin; assert_eq "$RC" 0 "contact rm of someone else's row"; assert_contains "$OUT" "removed from the contact book of hub work: erin"
-assert_not_contains "$(cat "$H/exchange/work/contacts.md")" "| erin |"
-[ -d "$H/exchange/work/people/erin" ] && ok "the directory of someone who left stays" || fail "contact rm touched people/erin"
-assert_eq "$(git -C "$H/exchange/work" log -1 --format=%s)" "[xchg] contacts: -erin" "contact rm commit"
-assert_eq "$(git -C "$H/exchange/work" rev-list --count '@{u}..HEAD')" 0 "contact rm pushed"
-run in_api "$X" send erin x <<< '# x'; assert_eq "$RC" 1 "no messages to a removed person"; assert_contains "$OUT" "'erin' is no longer in hub work"
-run "$X" contact rm erin; assert_eq "$RC" 1 "second rm: no row"; assert_contains "$OUT" "no 'erin'"
-run "$X" contact rm alice; assert_eq "$RC" 1 "rm doesn't remove your own row"; assert_contains "$OUT" "xchg hub rm work"
-run "$X" contact rm; assert_eq "$RC" 2 "contact rm without a login"
-run "$X" who аля; assert_contains "$OUT" "work  | alice"
-run "$X" who; assert_contains "$OUT" "projects: api, web"; ok "participation comes from agent directories"
-t "changes of the contact book reach every agent once"
-run in_api hook UserPromptSubmit "$X" inbox --brief; C=$(jq -r .hookSpecificOutput.additionalContext <<< "$OUT")
-assert_contains "$C" "hub work: contacts left: erin (Эрин) (xchg who)"; assert_not_contains "$C" "changed: alice"; ok "someone left; my own edited row is not news"
-run in_api hook UserPromptSubmit "$X" inbox --brief; assert_eq "$OUT" "" "told once (0 bytes)"
-run in_web "$X" inbox; assert_contains "$OUT" "hub work: contacts left: erin (Эрин) (xchg who)"; ok "the agent in web is told separately"
-git -C "$W2" pull -q
-printf '| frank | Фрэнк | | frank@example.com |\n' >> "$W2/contacts.md"
-sed -i 's/^| bob | Борис Петров | боря |/| bob | Boris | боря, bobby |/' "$W2/contacts.md"
-( cd "$W2" && git add -A && git commit -qm contacts && git push -q )
-run in_api hook UserPromptSubmit "$X" inbox --brief; C=$(jq -r .hookSpecificOutput.additionalContext <<< "$OUT")
-assert_contains "$C" "hub work: contacts joined: frank (Фрэнк); changed: bob (Boris) (xchg who)"; ok "joined and changed in one line"
-git -C "$W2" pull -q; printf '| grace | | | |\n' >> "$W2/contacts.md"; ( cd "$W2" && git add -A && git commit -qm contacts && git push -q )
-run in_web "$X" who >/dev/null; run in_web "$X" inbox; assert_not_contains "$OUT" "grace"; ok "who shows the book: nothing left to tell"
-run in_api "$X" inbox; assert_contains "$OUT" "hub work: contacts joined: grace (xchg who)"; ok "a person without a name is named by login"
-run "$X" contact rm frank >/dev/null; run "$X" contact rm grace >/dev/null; run in_api "$X" inbox >/dev/null; run in_web "$X" inbox >/dev/null
-run in_api "$X" send bob key <<< $'# key\nAKIAABCDEFGHIJKLMNOP'; assert_eq "$RC" 0 "a secret doesn't block"; assert_contains "$OUT" "looks like a secret"
-run in_api "$X" post work:@api nofref <<< '# no link'; assert_eq "$RC" 0 "a message without --ref"; assert_not_contains "$OUT" "--ref"
-sed -i 's/^contract: 6/contract: 7/' "$H/exchange/work/README.md"
-run in_api "$X" send bob z <<< '# z'; assert_eq "$RC" 1 "a foreign contract is refused"; assert_contains "$OUT" "contract 7"
-git -C "$H/exchange/work" checkout -q README.md
-mv "$SB/bare-work" "$SB/bare-work.off"
-run in_api "$X" inbox --brief; assert_eq "$RC" 0 "an unreachable hub doesn't break inbox"; assert_contains "$OUT" "hub work is unreachable"
-run in_api "$X" inbox --brief; assert_not_contains "$OUT" "unreachable"; ok "the repeat stays silent (once an hour)"
-mv "$SB/bare-work.off" "$SB/bare-work"
-run "$X" status; assert_contains "$OUT" "contract 6"
-run "$X" hub rm me; assert_eq "$RC" 0 "hub rm"; run "$X" hubs; assert_not_contains "$OUT" "me "
+rm "$SB/bare-work/hooks/pre-receive"
+run in_api "$X" send bob key <<< $'# key\nAKIAABCDEFGHIJKLMNOP'; assert_contains "$OUT" "looks like a secret"
+sed -i 's/^contract: 6/contract: 7/' "$WH/README.md"
+run in_api "$X" send bob z <<< '# z'; assert_eq "$RC" 1 "a foreign contract is refused"
+git -C "$WH" checkout -q README.md
 
 t "the price of the inbox is per hub, not per message"
 # a hook has 30 s and a fork costs milliseconds on WSL2: the inbox must not spawn a process per message.
-# Every external tool is counted through a wrapper on PATH; the hub gets 600 messages.
 git -C "$W2" pull -q
 for i in $(seq -w 1 300); do
   printf -- '---\nfrom: carol/web\nto: all\nkind: message\ndate: 2026-10-20T10:00:00Z\n---\n# Bulk %s\n' "$i" > "$W2/all/20261020-100000_carol_bulk$i.md"
@@ -686,10 +291,7 @@ for c in git awk sed grep sort head tail cat date mktemp sleep basename dirname 
   real=$(command -v "$c" 2>/dev/null) || continue
   printf '#!/bin/sh\necho "$0" >> "$XCHG_TEST_COUNT"; exec "%s" "$@"\n' "$real" > "$CNT/$c"; chmod +x "$CNT/$c"; done
 : > "$XCHG_TEST_COUNT"
-run in_api env PATH="$CNT:$PATH" "$X" inbox; assert_eq "$RC" 0 "inbox with 600 messages"
-assert_eq "$(grep -c '_bulk' <<< "$OUT")" 600 "all 600 are listed"
-assert_contains "$OUT" "Bulk 300"; assert_contains "$OUT" "Bulk task 001"
-assert_eq "$(awk '/Bulk task 001/ {print $2, $3}' <<< "$OUT")" "@api task" "address and kind columns"
+run in_api env PATH="$CNT:$PATH" "$X" inbox; assert_eq "$(grep -c '_bulk' <<< "$OUT")" 600 "all 600 are listed"
 N=$(wc -l < "$XCHG_TEST_COUNT" | tr -d ' ')
 [ "$N" -lt 120 ] && ok "inbox over 600 messages ran $N external processes" || fail "inbox over 600 messages ran $N external processes (a process per message?)"
 : > "$XCHG_TEST_COUNT"
@@ -698,96 +300,26 @@ N=$(wc -l < "$XCHG_TEST_COUNT" | tr -d ' ')
 [ "$N" -lt 80 ] && ok "a silent hook over 600 messages ran $N external processes" || fail "a silent hook over 600 messages ran $N external processes"
 unset XCHG_TEST_COUNT
 
-t "repository name outside [a-z0-9._-]"
-mkdir -p "$SB/repos/TRENDS-Frontend"; git init -q "$SB/repos/TRENDS-Frontend"
-in_tf() { ( cd "$SB/repos/TRENDS-Frontend" && "$@" ); }
-run in_tf "$X" agent; assert_contains "$OUT" "xchg projects add trends-frontend"
-run in_tf "$X" projects add; assert_eq "$RC" 2 "without a name: refused with a hint"
-assert_contains "$OUT" "xchg projects add trends-frontend"; assert_contains "$OUT" "git config xchg.project"
-run in_tf "$X" projects add trends-frontend; assert_eq "$RC" 0 "with the normalized name"
-assert_contains "$OUT" "is now project 'trends-frontend'"
-assert_eq "$(git -C "$SB/repos/TRENDS-Frontend" config xchg.project)" trends-frontend "the name is remembered in the repository"
-run in_tf "$X" agent; assert_eq "$OUT" "work:@trends-frontend:alice" "the agent is addressable under the new name"
-
-t "the project is found by origin, then by the directory name"
+t "the project is found by origin, git config xchg.project wins"
 mkdir -p "$SB/repos/api-fork"; git init -q "$SB/repos/api-fork"; git -C "$SB/repos/api-fork" remote add origin "https://alice:TOKEN@EXAMPLE.com/team/api.git"
-in_af() { ( cd "$SB/repos/api-fork" && "$X" "$@" ); }
-run in_af agent; assert_eq "$RC" 0 "agent in a clone named differently"; assert_eq "$OUT" "work:@api:alice" "found by origin: the clone name is not a project anywhere"
-run in_web "$X" send work:@api by-origin <<< '# Found by origin'; assert_eq "$RC" 0 "a task to the project"
-run in_af inbox; assert_contains "$OUT" "Found by origin"; assert_not_contains "$OUT" "is not a project in any hub"
-run in_af projects; assert_contains "$OUT" "api              here"
+run bash -c "cd '$SB/repos/api-fork' && '$X' agent"; assert_eq "$OUT" "work:@api:alice" "found by origin: the clone name is not a project anywhere"
 git -C "$SB/repos/api-fork" config xchg.project web
-run in_af agent; assert_contains "$OUT" "work:@web:alice"; assert_not_contains "$OUT" "@api"; ok "git config xchg.project wins over origin"
-git -C "$SB/repos/api-fork" config --unset xchg.project
-mkdir -p "$SB/moved/web"; git init -q "$SB/moved/web"; git -C "$SB/moved/web" remote add origin git@example.com:other/web.git
-in_mw() { ( cd "$SB/moved/web" && "$X" "$@" ); }
-run in_mw agent; assert_eq "$RC" 0 "agent in a clone whose origin differs from the card"
-assert_contains "$OUT" "work:@web:alice"; ok "the directory name still wins the mail"
-assert_contains "$OUT" "the card of project web names example.com/team/web, this clone's origin is example.com/other/web"
-assert_contains "$OUT" "xchg projects add web --repo"
-run in_mw projects add web --repo git@example.com:other/web.git --hub work; assert_eq "$RC" 0 "projects add --repo on an existing project"
-assert_contains "$OUT" "the card now names git@example.com:other/web.git"
-assert_eq "$(sed -n 's/^Repository: //p' "$H/exchange/work/projects/web/README.md")" "git@example.com:other/web.git" "the card is updated"
-assert_eq "$(git -C "$H/exchange/work" log -1 --format=%s)" "[xchg] project web: repository git@example.com:other/web.git" "and pushed"
-run in_mw agent; assert_not_contains "$OUT" "the card of project"; ok "no warning once the card follows the code"
-run in_mw projects add web --hub work; assert_contains "$OUT" "already exists"; ok "without --repo the card is left alone"
-run in_web "$X" projects add api2 --repo https://example.com/team/api.git --hub work; assert_eq "$RC" 0 "a second card naming the same repository"
-run in_af agent; assert_contains "$OUT" "projects api, api2 all name this repository; going by the directory name 'api-fork'"
-assert_contains "$OUT" "repository 'api-fork' is not a project in any hub"; ok "ambiguous cards: the directory name decides, and it asks to pin"
-run in_tool inbox; assert_contains "$OUT" "repository 'tool' is not a project in any hub, so mail to its project addresses is not checked (xchg projects add)"
-run hook SessionStart in_tool inbox --brief; assert_contains "$OUT" "repository 'tool' is not a project in any hub"
-run hook UserPromptSubmit in_tool inbox --brief --max-age 300; assert_not_contains "$OUT" "not a project"; ok "the prompt hook stays silent about it"
+run bash -c "cd '$SB/repos/api-fork' && '$X' agent"; assert_eq "$OUT" "work:@web:alice" "git config xchg.project wins over origin"
 
 t "a long hook list is digested: tasks line by line, a bulk sender one line"
-WD="$SB/wd"; git clone -q "$SB/bare-work" "$WD"
+run in_api "$X" seen all; run in_api "$X" seen @api   # the bulk of the previous section
 for i in 01 02 03 04 05 06 07 08 09 10 11 12 13 14; do
-  printf -- '---\nfrom: jira-bot/jira\nto: @api\nkind: message\ndate: 2026-09-12T10:%s:00Z\n---\n# TRND-%s closed\n' "$i" "$i" > "$WD/projects/api/20260912-10${i}00_jira-bot_trnd-$i.md"; done
-printf -- '---\nfrom: carol/web\nto: @api\nkind: message\ndate: 2026-09-12T11:00:00Z\n---\n# A human writes once\n' > "$WD/projects/api/20260912-110000_carol_once.md"
-printf -- '---\nfrom: bob/api\nto: @api\nkind: message\ndate: 2026-09-12T11:01:00Z\n---\n# Bob first\n' > "$WD/projects/api/20260912-110100_bob_first.md"
-printf -- '---\nfrom: bob/api\nto: @api\nkind: message\ndate: 2026-09-12T11:02:00Z\n---\n# Bob second\n' > "$WD/projects/api/20260912-110200_bob_second.md"
-printf -- '---\nfrom: jira-bot/jira\nto: @api:alice\nkind: task\ndate: 2026-09-12T11:05:00Z\n---\n# Bot task stays a line\n' > "$WD/projects/api/alice/20260912-110500_jira-bot_task.md"
-( cd "$WD" && git add -A && git commit -qm digest && git push -q )
-run hook SessionStart in_api "$X" inbox --brief --hook-format text; assert_eq "$RC" 0 "session hook over a pile"
-assert_contains "$OUT" "in the inbox, bulk senders one line each (xchg inbox; xchg seen <address> for what needs no action):"
-assert_contains "$OUT" "A human writes once"; assert_contains "$OUT" "Bot task stays a line"
-assert_contains "$OUT" "projects/api/20260912-101400_jira-bot_trnd-14.md jira-bot/jira 14 messages, latest: TRND-14 closed"
-assert_not_contains "$OUT" "TRND-13 closed"; ok "the pile is one line, and the line is the latest message's own"
-assert_eq "$(grep -c 'jira-bot' <<< "$OUT")" 2 "one line for the pile, one for the task"
-assert_contains "$OUT" "bob/api      2 messages, latest: Bob second"; assert_not_contains "$OUT" "Bob first"; ok "two messages are already one line: one line per sender and address"
+  printf -- '---\nfrom: jira-bot/jira\nto: @api\nkind: message\ndate: 2026-09-12T10:%s:00Z\n---\n# TRND-%s closed\n' "$i" "$i" > "$W2/projects/api/20260912-10${i}00_jira-bot_trnd-$i.md"; done
+put projects/api/20260912-110000_carol_once.md carol/web @api message "A human writes once"
+run hook SessionStart in_api "$X" inbox --brief --hook-format text
+assert_contains "$OUT" "jira-bot/jira 14 messages, latest: TRND-14 closed"
+assert_contains "$OUT" "A human writes once"   # a bulk sender is one line, a human stays
 run in_api hook UserPromptSubmit "$X" inbox --brief --max-age 300; assert_eq "$OUT" "" "everything in the digest counts as shown"
-run in_api "$X" inbox; assert_contains "$OUT" "TRND-13 closed"; ok "the full inbox is untouched by the digest"
-run in_api "$X" read projects/api/20260912-110000_carol_once.md; assert_eq "$RC" 0 "read a message"
-assert_contains "$OUT" "A human writes once"; assert_contains "$OUT" "once handled, mark it read: xchg seen work:projects/api/20260912-110000_carol_once.md"
-run in_api "$X" inbox; assert_contains "$OUT" "A human writes once"; ok "read marks nothing: the message is still open"
-run in_api "$X" read projects/api/alice/20260912-110500_jira-bot_task.md; assert_not_contains "$OUT" "mark it read"; ok "a task gets no such hint"
-{ echo 'digest = 0'; cat "$CONFF"; } > "$CONFF.new" && mv "$CONFF.new" "$CONFF"   # a global key goes above the hub sections
-printf -- '---\nfrom: jira-bot/jira\nto: @api\nkind: message\ndate: 2026-09-12T12:00:00Z\n---\n# TRND-15 closed\n' > "$WD/projects/api/20260912-120000_jira-bot_trnd-15.md"
-( cd "$WD" && git add -A && git commit -qm more && git push -q )
-run hook SessionStart in_api "$X" inbox --brief --hook-format text; assert_contains "$OUT" "TRND-13 closed"; assert_not_contains "$OUT" "bulk senders"; ok "digest = 0 switches it off"
-sed -i.bak 's/^digest = 0$/digest = many/' "$CONFF"
-run in_api "$X" inbox; assert_eq "$RC" 1 "a bad digest value is a config error"; assert_contains "$OUT" "digest = many, but it must be a number"
-sed -i.bak '/^digest = many$/d' "$CONFF"
-
-t "a repository in two hubs: the refusal names the audience, git config xchg.hub decides"
-run "$X" hub init own --login alice; assert_eq "$RC" 0 "a hub of my own"
-run in_api "$X" projects add api --hub own; assert_eq "$RC" 0 "the same project in the second hub"
-run in_api "$X" send @api:alice handoff <<< '# To myself'; assert_eq "$RC" 1 "an address that fits two hubs is refused"
-assert_contains "$OUT" "exists in hubs: work ("; assert_contains "$OUT" " people), own (only you)"; assert_contains "$OUT" "git config xchg.hub work"
-run in_api "$X" send @api:bob fine <<< '# Bob is in work only'; assert_eq "$RC" 0 "a colleague's address is unambiguous by the contact book"
-git -C "$SB/repos/api" config xchg.hub own
-run in_api "$X" send @api:alice handoff <<< '# To myself'; assert_eq "$RC" 0 "with xchg.hub the address goes through"; assert_contains "$OUT" "sent: own:projects/api/alice/"
-run in_api "$X" send work:@api:alice handoff2 <<< '# Explicit'; assert_contains "$OUT" "sent: work:projects/api/alice/"; ok "a prefix still wins"
-run in_api "$X" projects; assert_contains "$OUT" "own      api              here*"; assert_not_contains "$OUT" "work     api              here*"
-run in_api "$X" status; assert_contains "$OUT" "hub for this repository: own"
-run in_api "$X" projects add extra; assert_eq "$RC" 0 "projects add without --hub"; assert_contains "$OUT" "project added: own:projects/extra"
-git -C "$SB/repos/api" config xchg.hub nowhere
-run in_api "$X" send @api:alice handoff <<< '# To myself'; assert_eq "$RC" 1 "an unknown xchg.hub is ignored"; assert_contains "$OUT" "xchg.hub = nowhere, but there is no such hub"; assert_contains "$OUT" "exists in hubs:"
-git -C "$SB/repos/api" config --unset xchg.hub
-run "$X" hub rm own >/dev/null
+run in_api "$X" read projects/api/20260912-110000_carol_once.md
+run in_api "$X" inbox; assert_contains "$OUT" "A human writes once"   # read marks nothing: the message is still open
 
 t "config errors"
-printf 'default = a\n[hub a]\npath = /tmp/a\nbogus line\n' > "$H/.config/xchg/xchg.conf"
-run "$X" hubs; assert_eq "$RC" 1 "a bad line is an error"; assert_contains "$OUT" "xchg.conf:4: cannot parse"
-run "$X" help; assert_eq "$RC" 0 "help works with a broken config"
+printf 'default = a\n[hub a]\npath = /tmp/a\nbogus line\n' > "$CONFF"
+run "$X" hubs; assert_contains "$OUT" "xchg.conf:4: cannot parse"
 
 echo; echo "passed: $PASS, failed: $FAIL"; [ "$FAIL" = 0 ]
