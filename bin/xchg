@@ -116,7 +116,32 @@ ssh_cmd() {  # <key path>
 bind_key() {  # <clone path> <key path>: remember the key in the clone
   git -C "$1" config core.sshCommand "$(ssh_cmd "$2")"
 }
-require_hubs() { [ ${#HUBS[@]} -gt 0 ] || die "no hubs: xchg hub add <name> <remote> or xchg hub init <name>"; }
+require_hubs() { [ ${#HUBS[@]} -gt 0 ] && return 0
+  [ ${#NOCLONE_MSGS[@]} -gt 0 ] && { printf 'xchg: %s\n' "${NOCLONE_MSGS[@]}" >&2; exit 1; }
+  die "no hubs: xchg hub add <name> <remote> or xchg hub init <name>"; }
+# A clone is a .git with HEAD. Directories with xchg's own state (.git/xchg-*) alone are not one: a client
+# that wrote them before the clone existed made a hub look connected while it synced nothing.
+hub_cloned() { [ -f "$(hub_path "$1")/.git/HEAD" ]; }
+noclone_msg() { local r; r=$(masked "$(hub_remote "$1")"); echo "hub $1: not cloned at $(hub_path "$1") (xchg hub add $1 ${r:-<remote>})"; }
+# Hubs of the registry without a clone are left out of every command but hub, hubs and status; they are named instead.
+NOCLONE_HUBS=() NOCLONE_MSGS=()
+drop_uncloned() {
+  local i=0 h hs=() ps=() rs=() ls=() ks=()
+  for h in ${HUBS[@]+"${HUBS[@]}"}; do
+    if hub_cloned "$h"; then hs+=("$h"); ps+=("${HUB_PATHS[$i]:-}"); rs+=("${HUB_REMOTES[$i]:-}"); ls+=("${HUB_LOGINS[$i]:-}"); ks+=("${HUB_KEYS[$i]:-}")
+    else NOCLONE_HUBS+=("$h"); NOCLONE_MSGS+=("$(noclone_msg "$h")"); fi
+    i=$((i+1)); done
+  HUBS=(${hs[@]+"${hs[@]}"}); HUB_PATHS=(${ps[@]+"${ps[@]}"}); HUB_REMOTES=(${rs[@]+"${rs[@]}"})
+  HUB_LOGINS=(${ls[@]+"${ls[@]}"}); HUB_KEYS=(${ks[@]+"${ks[@]}"})
+}
+drop_stale_state() {  # <path>: a .git holding nothing but xchg's own state is in the way of the clone
+  local e; [ -d "$1/.git" ] && [ ! -f "$1/.git/HEAD" ] || return 0
+  for e in "$1"/.git/* "$1"/.git/.[!.]*; do [ -e "$e" ] || continue; case "${e##*/}" in (xchg-*) ;; (*) return 0;; esac; done
+  rm -rf "$1/.git"
+}
+noclone_of() { local i=0 h; for h in ${NOCLONE_HUBS[@]+"${NOCLONE_HUBS[@]}"}; do [ "$h" = "$1" ] && { echo "${NOCLONE_MSGS[$i]}"; return 0; }; i=$((i+1)); done; return 1; }
+need_hub() { is_hub "$1" && return 0; local m; m=$(noclone_of "$1") && die "$m"; die "no hub '$1' (xchg hubs)"; }
+noclone_note() { [ ${#NOCLONE_MSGS[@]} -gt 0 ] && printf 'xchg: %s\n' "${NOCLONE_MSGS[@]}"; return 0; }
 hub_login()  { local i l=""; if i=$(hub_idx "$1"); then l="${HUB_LOGINS[$i]:-}"; fi; echo "${l:-${USER:-$(id -un)}}"; }
 hub_has_remote() { git -C "$(hub_path "$1")" remote get-url origin >/dev/null 2>&1; }
 hub_contract() { grep -m1 -E '^contract: *[0-9]+' "$(hub_path "$1")/README.md" 2>/dev/null | sed -E 's/^contract: *//' || true; }
@@ -128,7 +153,7 @@ hub_audience() {  # <hub>... -> "work (5 people), me (only you)": who would read
 }
 default_hub() {
   [ -n "$CUR_HUB" ] && { echo "$CUR_HUB"; return; }
-  [ -n "$CFG_DEFAULT" ] && { echo "$CFG_DEFAULT"; return; }
+  [ -n "$CFG_DEFAULT" ] && { need_hub "$CFG_DEFAULT"; echo "$CFG_DEFAULT"; return; }
   [ ${#HUBS[@]} -eq 1 ] && { echo "${HUBS[0]}"; return; }
   die "several hubs (${HUBS[*]-}): add a hub: prefix or set default = <hub> in $CONF"
 }
@@ -163,7 +188,7 @@ ensure_conf() {
 # --- sync --------------------------------------------------------------------------------------
 hub_sync() {  # <hub>; stdout: notices for the agent
   local h="$1"; local d="$(hub_path "$h")"
-  [ -d "$d/.git" ] || { echo "hub $h: no clone at $d (xchg hub add $h <remote>)"; return 1; }
+  hub_cloned "$h" || { noclone_msg "$h"; return 1; }
   # a previous pull may have been killed by the timeout in the middle of a rebase: roll it back
   [ -d "$d/.git/rebase-merge" ] || [ -d "$d/.git/rebase-apply" ] && git -C "$d" rebase --abort >/dev/null 2>&1 || true
   hub_has_remote "$h" || return 0
@@ -322,7 +347,8 @@ parse_addr() {  # <[hub:]part[:part]> -> A_HUB A_REL A_LABEL
   local spec="$1" hub="" p="" u="" allflag=0 t parts=()
   IFS=: read -r -a parts <<< "$spec"
   [ ${#parts[@]} -gt 0 ] || udie "empty address"
-  if [ ${#parts[@]} -gt 1 ] && is_hub "${parts[0]}"; then hub="${parts[0]}"; parts=("${parts[@]:1}"); fi
+  if [ ${#parts[@]} -gt 1 ] && is_hub "${parts[0]}"; then hub="${parts[0]}"; parts=("${parts[@]:1}")
+  elif [ ${#parts[@]} -gt 1 ] && noclone_of "${parts[0]}" >/dev/null; then need_hub "${parts[0]}"; fi
   for t in "${parts[@]}"; do
     case "$t" in
       "") ;;
@@ -417,7 +443,9 @@ resolve_projects() {  # fills CUR_PROJECT (the clone's answer) and CUR_HUB_PROJE
   root=$(repo_root) || return 0
   o=$(git -C "$root" config --get xchg.project 2>/dev/null || true); CUR_PROJECT="${o:-${root##*/}}"
   CUR_HUB=$(git -C "$root" config --get xchg.hub 2>/dev/null || true)
-  if [ -n "$CUR_HUB" ] && ! is_hub "$CUR_HUB"; then warn "git config xchg.hub = $CUR_HUB, but there is no such hub (xchg hubs); ignored"; CUR_HUB=""; fi
+  if [ -n "$CUR_HUB" ] && ! is_hub "$CUR_HUB"; then
+    if noclone_of "$CUR_HUB" >/dev/null; then warn "git config xchg.hub = $CUR_HUB, ignored: $(noclone_of "$CUR_HUB")"
+    else warn "git config xchg.hub = $CUR_HUB, but there is no such hub (xchg hubs); ignored"; fi; CUR_HUB=""; fi
   [ -z "$o" ] && [ ${#HUBS[@]} -gt 0 ] || return 0   # pinned: the same project in every hub
   origin=$(git -C "$root" remote get-url origin 2>/dev/null || true); norm=$(norm_repo "$origin")
   for h in ${HUBS[@]+"${HUBS[@]}"}; do
@@ -660,7 +688,7 @@ locate() {
     *) die "file $a exists in hubs: ${found[*]} — be specific: ${found[0]}:$a";;
   esac
 }
-hub_filter() { [ -z "${OPT_HUB:-}" ] && { echo ${HUBS[@]+"${HUBS[@]}"}; return; }; is_hub "$OPT_HUB" || die "no hub '$OPT_HUB' (xchg hubs)"; echo "$OPT_HUB"; }
+hub_filter() { [ -z "${OPT_HUB:-}" ] && { echo ${HUBS[@]+"${HUBS[@]}"}; return; }; need_hub "$OPT_HUB"; echo "$OPT_HUB"; }
 
 # --- commands: reading -------------------------------------------------------------------------
 unsent_warn() { local h n; for h in "$@"; do hub_has_remote "$h" || continue
@@ -701,7 +729,12 @@ cmd_inbox() {
     --all) SHOW_ALL=1; shift;; --history) SHOW_HISTORY=1; shift;;
     --hook-format) HOOK_FORMAT="$2"; shift 2;; --session) HOOK_SESSION=1; shift;;
     *) udie "inbox [--brief] [--all] [--history] [--max-age N] [--hub H] [--hook-format F] [--session]";; esac; done
-  if [ ${#HUBS[@]} -eq 0 ]; then [ "$brief" = 1 ] && return 0; require_hubs; fi
+  if [ ${#HUBS[@]} -eq 0 ]; then
+    # hubs that are all registered but not cloned: say so once a session, otherwise the inbox just looks empty
+    if [ "$brief" = 1 ]; then read_hook_input
+      case "$HOOK_EVENT" in SessionStart|TaskStart) HOOK_SESSION=1;; esac
+      [ "$HOOK_SESSION" = 1 ] && hook_print "$(noclone_note)"; return 0; fi
+    require_hubs; fi
   local hubs; hubs=$(hub_filter); sync_hubs $hubs
   local out others unsent np n mode=new base book; base=$(baseline_hubs $hubs); book=$(contacts_notes $hubs)
   if [ "$brief" = 1 ]; then
@@ -713,7 +746,7 @@ cmd_inbox() {
     [ "$mode" = new ] && UNSHOWN=1
     out=$(inbox_lines $hubs)
     record_shown "$out"
-    others=$(others_note $hubs); unsent=$(unsent_warn $hubs); np=""; [ "$mode" = all ] && np=$(no_project_note)
+    others=$(others_note $hubs); unsent=$(unsent_warn $hubs); np=""; [ "$mode" = all ] && np=$(no_project_note; noclone_note)
     n=$(printf '%s' "$out" | grep -c . || true)
     local text digest="${CFG_DIGEST:-12}" shown="$out" how=""
     if [ "$digest" -gt 0 ] && [ "$n" -gt "$digest" ]; then shown=$(digest_lines "$out"); how=", bulk senders one line each"; fi
@@ -728,7 +761,7 @@ cmd_inbox() {
   fi
   out=$(inbox_lines $hubs)
   record_shown "$out"
-  others=$(others_note $hubs); unsent=$(unsent_warn $hubs); np=$(no_project_note)
+  others=$(others_note $hubs); unsent=$(unsent_warn $hubs); np=$(no_project_note); noclone_note >&2
   [ -n "$out" ] && echo "$out" || echo "no new messages"
   [ -n "$base" ] && echo "$base"; [ -n "$book" ] && echo "$book"; [ -n "$others" ] && echo "$others"; [ -n "$np" ] && echo "$np"; [ -n "$unsent" ] && echo "$unsent"; return 0
 }
@@ -789,7 +822,7 @@ cmd_attach() {  # put files into a hub and print links to paste into a message
   require_hubs; local files=() f h
   while [ $# -gt 0 ]; do case "$1" in --hub) OPT_HUB="$2"; shift 2;; *) files[${#files[@]}]="$1"; shift;; esac; done
   [ ${#files[@]} -gt 0 ] || udie "attach <file>... [--hub H]"
-  h="${OPT_HUB:-$(default_hub)}"; is_hub "$h" || die "no hub '$h'"; check_contract "$h"
+  h="${OPT_HUB:-$(default_hub)}"; need_hub "$h"; check_contract "$h"
   for f in "${files[@]}"; do att_put "$h" "$f"; done
 }
 cmd_attachments() {  # what a message carries
@@ -806,7 +839,7 @@ cmd_get() {  # download the attachments of a message, or one link, and print whe
   [ -n "$what" ] || udie "get <file | att:hash/name> [--to DIR] [--hub H]"
   local h l n=0
   case "$what" in
-    att:*) h="${OPT_HUB:-$(default_hub)}"; is_hub "$h" || die "no hub '$h'"; att_get "$h" "$what" "$to";;
+    att:*) h="${OPT_HUB:-$(default_hub)}"; need_hub "$h"; att_get "$h" "$what" "$to";;
     *) locate "$what"; h="$L_HUB"; local f="$(hub_path "$h")/$L_REL"; [ -f "$f" ] || die "no file $h:$L_REL"
        while IFS= read -r l; do [ -n "$l" ] || continue; att_get "$h" "$l" "$to"; n=$((n+1)); done < <(att_links "$f")
        [ "$n" -gt 0 ] || echo "no attachments in $h:$L_REL";;
@@ -1118,7 +1151,7 @@ cmd_contact_rm() {  # <login> [--hub H]: remove someone else's row from the book
     --hub) OPT_HUB="$2"; shift 2;; -*|"") udie "contact rm <login> [--hub H]";;
     *) [ -z "$login" ] || udie "contact rm <login> [--hub H]"; login="$1"; shift;; esac; done
   [ -n "$login" ] || udie "contact rm <login> [--hub H]"
-  local h; h="${OPT_HUB:-$(default_hub)}"; is_hub "$h" || die "no hub '$h'"
+  local h; h="${OPT_HUB:-$(default_hub)}"; need_hub "$h"
   sync_hubs "$h"; local d="$(hub_path "$h")"; local c="$d/contacts.md"
   [ "$login" != "$(hub_login "$h")" ] || die "you don't remove your own row: to leave the hub, xchg hub rm $h"
   [ -f "$c" ] && awk -F'|' -v l="$login" '/^\|/ { x=$2; gsub(/^ +| +$/,"",x); if (x==l) f=1 } END { exit !f }' "$c" \
@@ -1135,7 +1168,7 @@ cmd_contact() {
     --name) name="$2"; set=1; shift 2;; --aliases) aliases="$2"; set=1; shift 2;;
     --contact) contact="$2"; set=1; shift 2;;
     --hub) OPT_HUB="$2"; shift 2;; *) udie "contact [--name N] [--aliases 'a, b'] [--contact C] [--hub H]";; esac; done
-  local h; h="${OPT_HUB:-$(default_hub)}"; is_hub "$h" || die "no hub '$h'"
+  local h; h="${OPT_HUB:-$(default_hub)}"; need_hub "$h"
   sync_hubs "$h"; local d="$(hub_path "$h")"; local c="$d/contacts.md" me; me=$(hub_login "$h")
   [ -f "$c" ] || die "hub $h has no contacts.md"
   local cur; cur=$(awk -F'|' -v me="$me" '/^\|/ { l=$2; gsub(/^ +| +$/,"",l); if (l==me) { print; exit } }' "$c")
@@ -1168,7 +1201,7 @@ cmd_project_add() {
   require_hubs; local name="${1:-}" repo="" owner=""
   case "$name" in --*|"") name="";; *) shift;; esac   # the name is optional: without it, the current repository
   while [ $# -gt 0 ]; do case "$1" in --repo) repo="$2"; shift 2;; --owner) owner="$2"; shift 2;; --hub) OPT_HUB="$2"; shift 2;; *) udie "projects add <name> [--repo <where the code is>] [--owner login] [--hub H]";; esac; done
-  local h; h="${OPT_HUB:-$(default_hub)}"; is_hub "$h" || die "no hub '$h'"
+  local h; h="${OPT_HUB:-$(default_hub)}"; need_hub "$h"
   local from_repo=0 root; [ -n "$name" ] || { name=$(cur_project "$h"); from_repo=1; }
   [ -n "$name" ] || udie "projects add: not in a git repository, give a project name"
   if ! [[ "$name" =~ $PROJ_RE ]]; then
@@ -1277,20 +1310,38 @@ cmd_hub() {
         --ssh-key) key=$(expand_tilde "$2"); shift 2;; *) udie "hub add: unknown flag $1";; esac; done
       [ -z "$key" ] || check_key "$key"
       [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]] || udie "hub add: hub name must be [A-Za-z0-9_-]"
-      ensure_conf >/dev/null; is_hub "$name" && die "hub '$name' already exists (xchg hubs)"
+      ensure_conf >/dev/null
+      # a hub of the registry without a clone (a copied config, a removed clone): finish what is registered
+      local resume=0 cr=""
+      if is_hub "$name"; then
+        hub_cloned "$name" && die "hub '$name' already exists (xchg hubs)"
+        cr=$(hub_remote "$name")
+        [ -z "$cr" ] || [ "$cr" = "$remote" ] || die "hub $name is registered with $(masked "$cr"): repeat with that address, or xchg hub rm $name first"
+        [ -z "$path" ] || [ "$path" = "$(hub_path "$name")" ] || die "hub $name is registered at $(hub_path "$name"): repeat without --path, or xchg hub rm $name first"
+        path=$(hub_path "$name"); resume=1
+      fi
       [ -n "$path" ] || path="$HOME/exchange/$name"
-      if [ -d "$path/.git" ]; then [ "$(git -C "$path" remote get-url origin 2>/dev/null)" = "$remote" ] || die "$path already holds a different clone"; echo "clone already exists: $path"
+      drop_stale_state "$path"
+      if [ -f "$path/.git/HEAD" ]; then [ "$(git -C "$path" remote get-url origin 2>/dev/null)" = "$remote" ] || die "$path already holds a different clone"; echo "clone already exists: $path"
       elif [ -n "$key" ]; then GIT_SSH_COMMAND="$(ssh_cmd "$key")" git clone -q "$remote" "$path" || die "clone of $(masked "$remote") with the key $key failed (xchg hub check $name after fixing it)"
-      else git clone -q "$remote" "$path" || die "clone of $(masked "$remote") failed"; fi
+      else git clone -q "$remote" "$path" || die "clone of $(masked "$remote") failed (xchg hub check $name)"; fi
       [ -n "$key" ] && bind_key "$path" "$key"
-      conf_add_hub "$name" "$remote" "$path" "$login" "$key"
-      hub_new "$name" "$path" "$remote" "$login" "$key"
+      if [ "$resume" = 1 ]; then
+        [ -n "$cr" ] || { conf_set_hub "$name" remote "$remote"; hub_set "$name" remote "$remote"; }
+        [ -z "$login" ] || { conf_set_hub "$name" login "$login"; hub_set "$name" login "$login"; }
+        [ -z "$key" ] || { conf_set_hub "$name" ssh_key "$key"; hub_set "$name" key "$key"; }
+        key=$(hub_key "$name"); [ -z "$key" ] || bind_key "$path" "$key"
+      else
+        conf_add_hub "$name" "$remote" "$path" "$login" "$key"
+        hub_new "$name" "$path" "$remote" "$login" "$key"
+      fi
       [ -n "$CFG_DEFAULT" ] || conf_set_global default "$name"
-      echo "hub $name connected: $path <- $(masked "$remote")${login:+ (login $login)}${key:+ (ssh key $key)}"
+      login=$(hub_login "$name")
+      echo "hub $name connected: $path <- $(masked "$remote") (login $login)${key:+ (ssh key $key)}"
       register_me "$name"; contacts_note "$name";;
     key) local name="${1:-}" kp="${2:-}"; [ -n "$kp" ] || udie "hub key <name> <path to key>"; require_hubs
       kp=$(expand_tilde "$kp"); is_hub "$name" || die "no hub '$name'"; check_key "$kp"
-      local d="$(hub_path "$name")"; [ -d "$d/.git" ] && bind_key "$d" "$kp"
+      local d="$(hub_path "$name")"; hub_cloned "$name" && bind_key "$d" "$kp"
       conf_set_hub "$name" ssh_key "$kp"; hub_set "$name" key "$kp"
       echo "hub $name now uses the ssh key $kp";;
     check) local name="${1:-}"; [ -n "$name" ] || udie "hub check <name>"; require_hubs; is_hub "$name" || die "no hub '$name'"
@@ -1342,7 +1393,8 @@ cmd_log() { require_hubs; local n=20 hubs h; while [ $# -gt 0 ]; do case "$1" in
   hubs=$(hub_filter); sync_hubs $hubs; for h in $hubs; do echo "== $h"; git -C "$(hub_path "$h")" log --oneline -n "$n"; done; }
 cmd_sync() { require_hubs; [ "${1:-}" = --hub ] && OPT_HUB="$2"; local hubs unsent; hubs=$(hub_filter); sync_hubs $hubs
   unsent=$(unsent_warn $hubs); echo "synced: $hubs"
-  if [ -n "$unsent" ]; then echo "$unsent"; PUSH_FAILED=1; fi; return 0; }
+  if [ -n "$unsent" ]; then echo "$unsent"; PUSH_FAILED=1; fi
+  [ -n "${OPT_HUB:-}" ] || [ ${#NOCLONE_MSGS[@]} -eq 0 ] || { noclone_note >&2; return 1; }; return 0; }
 
 # --- install and status ------------------------------------------------------------------------
 # Supported harnesses. For each: where its config lives, the hooks file, the session start and prompt
@@ -1437,10 +1489,10 @@ cmd_status() {
   echo "xchg $(cmd_version)  ($XCHG_ROOT, contract $XCHG_CONTRACT, $([ "$PLUGIN_MODE" = 1 ] && echo 'harness package' || echo 'standalone install'))"
   echo "config: $CONF ($CONF_MODE); default: ${CFG_DEFAULT:--}; project here: $(cur_project 2>/dev/null || echo '-'); hub for this repository: ${CUR_HUB:--}"
   local h d st ahead; for h in ${HUBS[@]+"${HUBS[@]}"}; do d="$(hub_path "$h")"
-    if [ -d "$d/.git" ]; then st="synced $([ -f "$d/.git/xchg-last-sync" ] && echo "$(rel_time "$(cat "$d/.git/xchg-last-sync")") ago" || echo never)"
+    if hub_cloned "$h"; then st="synced $([ -f "$d/.git/xchg-last-sync" ] && echo "$(rel_time "$(cat "$d/.git/xchg-last-sync")") ago" || echo never)"
       ahead=$(git -C "$d" rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0); [ "$ahead" != 0 ] && st="$st, not pushed: $ahead"
       [ -f "$d/.git/xchg-unavail" ] && st="$st, UNREACHABLE since $(rel_time "$(cat "$d/.git/xchg-unavail")") ago"
-    else st="NO CLONE"; fi
+    else st="NO CLONE ($(noclone_msg "$h" | sed 's/.*(//; s/)$//'))"; fi
     printf '  %-8s contract %-4s %s\n' "$h" "$(hub_contract "$h" || true)" "$st"; done
   if [ "$PLUGIN_MODE" = 1 ]; then echo "hooks and skills: from the harness package"; return 0; fi
   local hn ok
@@ -1500,7 +1552,9 @@ H
 main() {
   OPT_HUB="${XCHG_HUB:-}"
   case "${1:-help}" in help|-h|--help) cmd_help; exit 0;; version) cmd_version; exit 0;; esac
-  load_conf; resolve_projects
+  load_conf
+  case "${1:-}" in hub|hubs|status) ;; *) drop_uncloned;; esac
+  resolve_projects
   case "${1:-help}" in
     wait) shift; cmd_wait "$@";;
     mute) shift; cmd_mute "$@";;

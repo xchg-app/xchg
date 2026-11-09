@@ -193,6 +193,12 @@ xchg key new [--name N]
 xchg sync [--hub H] | xchg log [n] [--hub H] | xchg status | xchg install | xchg version
 ```
 
+A hub that is in `xchg.conf` but has no clone at its `path` (the config came from another machine,
+the clone was removed) is left out of every command except `hub`, `hubs` and `status`: nothing is
+written into its directory. `inbox` names it (in a hook, at session start), `sync` names it and exits
+1, `status` shows `NO CLONE`. Each names the command that fixes it: `xchg hub add <name> <remote>`
+with the registered remote clones the hub into the registered path and keeps its login and key.
+
 `hub upgrade` brings the hub's own files to this client's version: `README.md` with the rules,
 `.gitattributes`, the `all/` and `projects/` directories. Messages, `contacts.md` and passports are
 not touched. If the hub is already current, nothing is written. Otherwise the change is one commit,

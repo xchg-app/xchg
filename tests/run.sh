@@ -318,6 +318,21 @@ run in_api hook UserPromptSubmit "$X" inbox --brief --max-age 300; assert_eq "$O
 run in_api "$X" read projects/api/20260912-110000_carol_once.md
 run in_api "$X" inbox; assert_contains "$OUT" "A human writes once"   # read marks nothing: the message is still open
 
+t "a hub in the registry without a clone"
+# a copied config: the hub is registered, the clone is not there; an older client then left .git/xchg-* state
+git init -q --bare "$SB/bare-nc"; run "$X" hub init nc0 --remote "file://$SB/bare-nc" --path "$SB/nc0" --login alice; run "$X" hub rm nc0
+printf '\n[hub nc]\nremote = file://%s/bare-nc\npath = %s/nc\nlogin = alice\n' "$SB" "$SB" >> "$CONFF"
+NC="hub nc: not cloned at $SB/nc (xchg hub add nc file://$SB/bare-nc)"
+run hook SessionStart in_api "$X" inbox --brief --hook-format text; assert_contains "$OUT" "$NC"
+[ -e "$SB/nc" ] && fail "inbox wrote state where there is no clone" || ok "no state is written without a clone"
+mkdir -p "$SB/nc/.git/xchg-read"
+run in_api "$X" sync; assert_eq "$RC" 1 "sync fails while a hub is not cloned"; assert_contains "$OUT" "$NC"
+assert_eq "$(grep '^synced:' <<< "$OUT" | grep -cw nc || true)" 0 "and doesn't call it synced"
+run "$X" hub add nc "file://$SB/bare-nc"; assert_eq "$RC" 0 "hub add finishes the clone of a registered hub"
+[ -f "$SB/nc/.git/HEAD" ] && ok "the hub is cloned" || fail "no clone after hub add" "$OUT"
+run "$X" status; assert_not_contains "$OUT" "NO CLONE"
+run "$X" hub rm nc >/dev/null
+
 t "config errors"
 printf 'default = a\n[hub a]\npath = /tmp/a\nbogus line\n' > "$CONFF"
 run "$X" hubs; assert_contains "$OUT" "xchg.conf:4: cannot parse"
