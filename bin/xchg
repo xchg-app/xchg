@@ -208,7 +208,7 @@ hub_sync() {  # <hub>; stdout: notices for the agent
     fi
   else
     local u="$d/.git/xchg-unavail" last=0; [ -f "$u" ] && last=$(cat "$u")
-    if [ "$BRIEF" = 0 ] || [ $((now - last)) -ge 3600 ]; then echo "hub $h is unreachable ($(hub_remote "$h" | sed 's/^$/origin/' | mask_url))"; echo "$now" > "$u"; fi
+    if [ "$BRIEF" = 0 ] || [ $((now - last)) -ge 3600 ]; then echo "hub $h is unreachable ($(hub_remote "$h" | sed 's/^$/origin/' | mask_url)): xchg hub check $h"; echo "$now" > "$u"; fi
   fi
   return 0
 }
@@ -1282,6 +1282,54 @@ hub_upgrade() {  # <name> <1: may move the hub to this client's contract>
   hub_push "$h" "[hub] upgrade to $v (contract $XCHG_CONTRACT)" || true
   echo "hub $h upgraded to xchg $v (contract $c -> $XCHG_CONTRACT)"
 }
+# hub check answers with the cause, read from what ssh and git said: one generic hint sent people to
+# fix the wrong thing (their public key, when ssh did not know the server's key).
+ssh_target() {  # <remote> -> "host port" for an ssh remote, nothing for others; ~/.ssh/config is applied
+  local h="" p=""
+  case "$1" in
+    ssh://*) h="${1#ssh://}"; h="${h%%/*}"; h="${h#*@}"; case "$h" in *:*) p="${h##*:}"; h="${h%%:*}";; esac;;
+    *://*) return 0;;
+    *:*) h="${1%%:*}"; h="${h#*@}"; case "$h" in */*) return 0;; esac;;
+    *) return 0;;
+  esac
+  if have ssh; then local g; g=$(ssh -G ${p:+-p "$p"} "$h" 2>/dev/null) &&
+    { h=$(awk '$1=="hostname"{print $2; exit}' <<< "$g"); p=$(awk '$1=="port"{print $2; exit}' <<< "$g"); }; fi
+  echo "$h ${p:-22}"
+}
+host_fingerprints() {  # <host> <port> -> "SHA256:... (ED25519)", comma-separated; nothing if unknown
+  have ssh-keyscan && have ssh-keygen || return 0
+  with_timeout 10 ssh-keyscan -p "$2" "$1" 2>/dev/null | ssh-keygen -lf - 2>/dev/null | awk '{printf "%s%s %s", (NR>1?", ":""), $2, $NF}' || true
+}
+agent_state() {  # why the user's ssh had no key the hub accepts
+  [ -n "${SSH_AUTH_SOCK:-}" ] || { echo "there is no ssh-agent in this shell (SSH_AUTH_SOCK is empty), so only key files of ~/.ssh were tried"; return; }
+  have ssh-add || { echo "give the hub owner your public key"; return; }
+  local rc=0; ssh-add -l >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) echo "it accepts none of the ssh-agent's keys: give the hub owner one of them (ssh-add -L)";;
+    1) echo "the ssh-agent holds no keys (ssh-add <key>)";;
+    *) echo "the ssh-agent at $SSH_AUTH_SOCK does not answer (start it, or point SSH_AUTH_SOCK at it)";;
+  esac
+}
+check_reason() {  # <remote> <own key or ""> <stderr of git> -> the cause and the next step
+  local r="$1" k="$2" e="$3" t h p fp
+  case "$e" in
+    *"REMOTE HOST IDENTIFICATION HAS CHANGED"*)
+      echo "the server's host key is not the one ssh knows: the server was reinstalled or someone is in between; ask the hub owner for its fingerprint before trusting the new key";;
+    *"Host key verification failed"*|*"No "*" host key is known"*)
+      t=$(ssh_target "$r"); h="${t% *}"; p="${t#* }"; fp=""; [ -z "$h" ] || fp=$(host_fingerprints "$h" "$p")
+      echo "ssh does not know the server's host key${fp:+ ($fp)}; compare it with the fingerprint from the hub owner, then: ssh-keyscan$([ "$p" = 22 ] || echo " -p $p") ${h:-<host>} >> ~/.ssh/known_hosts";;
+    *"Permission denied (publickey"*|*"Permission denied, please try again"*)
+      if [ -n "$k" ]; then echo "the hub does not accept the key $k: give the hub owner $k.pub"
+      else echo "the hub refused your ssh keys: $(agent_state)"; fi;;
+    *"Could not resolve hostname"*|*"Connection refused"*|*"timed out"*|*"Network is unreachable"*|*"No route to host"*|*"Could not resolve host"*|*"Failed to connect"*)
+      echo "the server cannot be reached over the network: check the address and the connection";;
+    *"Authentication failed"*|*"could not read Username"*|*"could not read Password"*|*"terminal prompts disabled"*)
+      echo "the server wants a login and token: put them in the address (https://login:TOKEN@host/...), xchg hub remote";;
+    *"Repository not found"*|*"could not be found"*|*"does not appear to be a git repository"*|*"not found"*|*"No such file or directory"*|*"access denied"*|*"Access denied"*)
+      echo "the server answers, but has no repository at $(masked "$r") or does not let you in: check the address with the hub owner";;
+    *) echo "git cannot reach $(masked "$r")${k:+ with the key $k}";;
+  esac
+}
 cmd_hub() {
   local sub="${1:-}"; shift || true
   case "$sub" in
@@ -1356,8 +1404,12 @@ cmd_hub() {
       if [ -n "$k" ]; then sc="$(ssh_cmd "$k")"
       elif [ -n "${GIT_SSH_COMMAND:-}" ] || [ -z "${GIT_SSH:-}" ]; then sc="${GIT_SSH_COMMAND:-$(git config --get core.sshCommand || echo ssh)}"; fi
       [ -z "$sc" ] || ev=("GIT_SSH_COMMAND=$sc -o BatchMode=yes")
-      if env ${ev[@]+"${ev[@]}"} GIT_TERMINAL_PROMPT=0 git ls-remote "$r" HEAD >/dev/null 2>&1; then echo "hub $name: $(masked "$r") answers${k:+, the key $k is accepted}"
-      else die "hub $name: git cannot reach $(masked "$r")${k:+ with the key $k} (give the hub owner the public key${k:+ $k.pub}, or check the address)"; fi;;
+      local err; err=$(env ${ev[@]+"${ev[@]}"} GIT_TERMINAL_PROMPT=0 git ls-remote "$r" HEAD 2>&1 >/dev/null) &&
+        { echo "hub $name: $(masked "$r") answers${k:+, the key $k is accepted}"; return 0; }
+      # the line that says why: git's own closing lines ("Could not read from remote repository", "Please make sure...") say nothing
+      local last; last=$(printf '%s\n' "$err" | grep -v -e '^[[:space:]]*$' -e 'Could not read from remote repository' -e '^Please make sure' -e '^and the repository exists' | head -n 1 | mask_url)
+      [ -n "$last" ] || last=$(printf '%s\n' "$err" | grep -v '^[[:space:]]*$' | tail -n 1 | mask_url)
+      die "hub $name: $(check_reason "$r" "$k" "$err") (git: ${last:-no output})";;
     upgrade) local name="${1:-}" bump=0; shift || true
       while [ $# -gt 0 ]; do case "$1" in --contract) bump=1; shift;; *) udie "hub upgrade <name> [--contract]";; esac; done
       [ -n "$name" ] || udie "hub upgrade <name> [--contract]"; require_hubs; is_hub "$name" || die "no hub '$name'"

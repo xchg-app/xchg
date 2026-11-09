@@ -158,7 +158,12 @@ Register the public key with the hub owner before connecting: `xchg key new` pri
 is `<key>.pub`.
 `hub check` also works for a hub without a key of its own: it then goes through your usual ssh
 setup (agent, `~/.ssh/config`, `core.sshCommand`). It never waits for a passphrase or password:
-where one is needed, the check fails.
+where one is needed, the check fails. A failed check names the cause from what ssh and git said: the
+server's host key is unknown (with its fingerprint and the command that adds it once you have
+compared it with the hub owner's) or has changed, the key is refused (for a hub without a key of
+its own: whether there is an ssh-agent and whether it holds keys), the server is not reachable, there
+is no repository at the address, or a login and token are missing. git's own line follows in
+parentheses. Each "hub is unreachable" notice of `inbox` and `sync` ends with `xchg hub check <name>`.
 
 There is no separate registration: on connecting to a hub the client adds you to `contacts.md`
 (name and contact come from `git config user.name` and `user.email`) and creates `people/<login>/`,
