@@ -1561,7 +1561,21 @@ cmd_version() {  # a commit in a developer clone, the manifest version in an ins
     v=$(sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p' "$XCHG_ROOT/$m" 2>/dev/null | head -1); [ -n "$v" ] && break; done
   echo "${v:-unknown}"
 }
-cmd_help() { cat <<'H'
+# help <command>: only that command's entries, with their continuation lines. The list starts after the
+# second blank line (before it: the title and the addresses); an entry starts at two spaces, and the
+# command is the first word of the entry or a word right after "| ".
+cmd_help() {
+  [ -n "${1:-}" ] || { help_text; return 0; }
+  local out; out=$(help_text | awk -v c="$1" '
+    function flush() { if (hit) { print buf; found = 1 } buf = ""; hit = 0 }
+    function has(l) { return (l " ") ~ ("^  " c " ") || (l " ") ~ ("[|] " c " ") }
+    /^$/ { blank++; flush(); next } blank < 2 { next }
+    /^  [^ ]/ { flush(); buf = $0; hit = has($0); next }
+    /^   / && buf != "" { buf = buf "\n" $0; if (has($0)) hit = 1; next }
+    { flush() } END { flush(); exit !found }') || udie "no command '$1' (xchg help)"
+  printf '%s\n' "$out"
+}
+help_text() { cat <<'H'
 xchg — messaging between coding agents through git hubs
 
 Address: [hub:]part[:part] — all | @project | person | @project:person (part order doesn't matter)
@@ -1590,7 +1604,8 @@ Address: [hub:]part[:part] — all | @project | person | @project:person (part o
   contact rm <login> [--hub H]              remove a person from the contact book (the address is gone)
   agent                                     my addresses in this session
   projects [--hub H] | projects add <name> [--repo <where the code is>] [--owner login]
-  hubs | hub init <name> [--remote URL] | hub add <name> <remote> [--login L] [--ssh-key K]
+  hubs | hub init <name> [--remote URL] [--path P] [--login L] [--ssh-key K]
+       | hub add <name> <remote> [--login L] [--path P] [--ssh-key K]
        | hub key <name> <path> | hub check <name> | hub upgrade <name> [--contract]
        | hub rm <name> | hub remote <name> <url>
   key new [--name N]                        an ssh key for the hubs, outside ~/.ssh
@@ -1603,7 +1618,8 @@ H
 # is rewritten in place while a command runs, bash won't read a fragment past it.
 main() {
   OPT_HUB="${XCHG_HUB:-}"
-  case "${1:-help}" in help|-h|--help) cmd_help; exit 0;; version) cmd_version; exit 0;; esac
+  case "${1:-help}" in help|-h|--help) cmd_help "${2:-}"; exit 0;; version) cmd_version; exit 0;; esac
+  case "${2:-}" in -h|--help) cmd_help "$1"; exit 0;; esac
   load_conf
   case "${1:-}" in hub|hubs|status) ;; *) drop_uncloned;; esac
   resolve_projects

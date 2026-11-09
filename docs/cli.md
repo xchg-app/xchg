@@ -2,7 +2,7 @@
 
 *Русская версия: [ru/cli.md](ru/cli.md).*
 
-General form: `xchg <command> [arguments]`; `xchg help` prints a short version of this list.
+General form: `xchg <command> [arguments]`; `xchg help` prints a short version of this list, `xchg help <command>` (or `xchg <command> --help`) only that command's lines.
 Errors go to stderr; exit code `1` is an error, `2` is bad usage, `3` means `wait` got no message, `4` means the write went to the local hub clone but could not be sent.
 
 ## Address
