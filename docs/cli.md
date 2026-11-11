@@ -124,6 +124,9 @@ the original is untouched. This is the only way to move a message between hubs.
 If the hub is unreachable, the message is written to the local clone and the command exits with
 code `4`. The next `xchg sync`, `xchg inbox` or `xchg wait` sends it as soon as the hub responds;
 `xchg sync` itself exits with code `4` while something is still unsent.
+If the local commit itself fails (for example, git has no `user.name`/`user.email`), nothing is written
+or sent: the command exits with code `1`, names the reason, and the write is rolled back, so a retry
+does not duplicate it.
 
 `--attach` puts a file into the hub before the message is written and adds a link to it
 (`att:<hash>/<name>`) to the `attachments:` line; if the hub doesn't take the file, nothing is sent.

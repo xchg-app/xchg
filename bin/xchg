@@ -246,9 +246,19 @@ strip_creds() { sed -E 's#(://)[^/@]+@#\1#g'; }   # https://bob:TOKEN@host/x.git
 # A hub may refuse a push and explain why with "xchg: ..." lines from its hook: not a network failure, retrying won't help.
 hub_refusal() { awk '{gsub(/\033\[K/,"")} sub(/^remote: xchg: */,"") {sub(/[ \t\r]+$/,""); print}'; }
 hub_push() {  # <hub> <commit message>
-  local h="$1"; local d="$(hub_path "$h")"; git -C "$d" commit -q -m "$2"
+  local h="$1"; local d="$(hub_path "$h")" i err why l
+  if ! git -C "$d" diff --cached --quiet; then   # nothing staged: only push what is already committed
+    why=$(git -C "$d" commit -q -m "$2" 2>&1) || {   # a failed commit must not pass for a sent message
+      git -C "$d" reset -q --hard HEAD 2>/dev/null || true   # or the write would ride along in the next commit
+      case "$why" in
+        *"identity unknown"*|*"empty ident"*) die "git has no author to commit to hub $h with, nothing was written or sent: set git config --global user.name and user.email (or GIT_AUTHOR_*/GIT_COMMITTER_*) and retry";;
+      esac
+      while IFS= read -r l; do [ -z "$l" ] || warn "$l"; done <<< "$why"
+      die "the commit to hub $h failed, nothing was written or sent: fix the git error above and retry"
+    }
+  fi
   hub_has_remote "$h" || return 0
-  local i err why l; err=$(mktemp)
+  err=$(mktemp)
   for i in 1 2 3; do
     if git -C "$d" pull -q --rebase --autostash >/dev/null 2>&1; then
       git -C "$d" push -q 2>"$err" && { rm -f "$err"; return 0; }
@@ -1057,8 +1067,9 @@ cmd_reply() {
   local me nf; me=$(sender_id "$A_HUB")
   nf=$(write_msg "$A_HUB" "$A_REL" "$kind" "$me" "$A_LABEL" "$slug" "$(basename "$L_REL")" "" "" "$body" "$links")
   warn_secrets "$body"; warn_no_project "$A_HUB"
+  hub_push "$A_HUB" "[xchg] $me -> $A_LABEL: $slug (reply)" || true
   [ "$(kind_of "$f")" = task ] || mark_read "$L_HUB" "$(dirname "$L_REL")" "$L_REL"   # answered is handled; a task stays until done
-  mark_shown "$A_HUB" "$(basename "$nf")"; hub_push "$A_HUB" "[xchg] $me -> $A_LABEL: $slug (reply)" || true; echo "sent: $A_HUB:$nf"
+  mark_shown "$A_HUB" "$(basename "$nf")"; echo "sent: $A_HUB:$nf"
 }
 cmd_claim() {  # take a task: the file moves to my agent's address
   require_hubs; [ -n "${1:-}" ] || udie "claim <file>"

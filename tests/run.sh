@@ -249,6 +249,11 @@ WH="$H/exchange/work"; HEAD0=$(git -C "$WH" rev-parse HEAD)
 run in_api "$X" send bob refused <<< '# Refused'
 [ "$RC" = 1 ] && [ "$(git -C "$WH" rev-parse HEAD)" = "$HEAD0" ] && ok "a hub refusal exits 1 and rolls the local commit back" || fail "a hub refusal isn't rolled back" "$OUT"
 rm "$SB/bare-work/hooks/pre-receive"
+git config --global user.useConfigOnly true   # no git author: the commit fails
+run in_api env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL "$X" send bob noauthor <<< '# No author'
+git config --global --unset user.useConfigOnly
+[ "$RC" = 1 ] && ! grep -q "^sent:" <<< "$OUT" && grep -qF "user.email" <<< "$OUT" && [ "$(git -C "$WH" rev-parse HEAD)" = "$HEAD0" ] && [ -z "$(git -C "$WH" status --porcelain)" ] \
+  && ok "a failed commit exits 1 without 'sent' and leaves nothing staged" || fail "a failed commit passes for a sent message" "$OUT"
 run in_api "$X" send bob key <<< $'# key\nAKIAABCDEFGHIJKLMNOP'; assert_contains "$OUT" "looks like a secret"
 sed -i 's/^contract: 6/contract: 7/' "$WH/README.md"
 run in_api "$X" send bob z <<< '# z'; assert_eq "$RC" 1 "a foreign contract is refused"
