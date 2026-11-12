@@ -975,7 +975,12 @@ cmd_seen() {  # mark messages as read: a whole address, one file or all my addre
   parse_addr "$target"; sync_hubs "$A_HUB"; mark_read "$A_HUB" "$A_REL"; echo "read: $A_HUB:$A_LABEL"
 }
 cmd_sent() {  # my open tasks; a task the recipient has answered is "replied", the rest "waiting"
-  require_hubs; local hubs h d me f from n=0 st replies wait="" rep=""; hubs=$(hub_filter); sync_hubs $hubs
+  require_hubs; local hubs h d me f from n=0 st replies wait="" rep="" days="" cut=""
+  while [ $# -gt 0 ]; do case "$1" in
+    --stale) days=14; shift; case "${1:-}" in ''|-*) ;; *[!0-9]*) udie "sent --stale [days]: days must be a number";; *) days="$1"; shift;; esac;;
+    *) udie "sent [--stale [days]]";; esac; done
+  [ -z "$days" ] || cut=$(utc_stamp $(( $(date -u +%s) - days * 86400 )))   # file names start with the same stamp
+  hubs=$(hub_filter); sync_hubs $hubs
   for h in $hubs; do me=$(hub_login "$h"); d=$(hub_path "$h")
     # "<re><TAB><from>" of every message that answers something, open or closed
     replies=$(find "$d" -name '*.md' -not -name README.md -not -path '*/.git/*' -type f -exec awk '
@@ -983,6 +988,7 @@ cmd_sent() {  # my open tasks; a task the recipient has answered is "replied", t
       fm==1 && sub(/^re: */, "") { re=$0 } fm==1 && sub(/^from: */, "") { fr=$0 }' {} + 2>/dev/null)
     while IFS= read -r f; do [ "$(kind_of "$f")" = task ] || continue
       from=$(meta from "$f"); case "$from" in "$me"|"$me"/*) ;; *) continue;; esac
+      st=$(basename "$f"); [ -z "$cut" ] || [[ "${st%%_*}" < "$cut" ]] || continue
       # an answer from the sender's own signature is a follow-up, not the recipient's reply
       if printf '%s\n' "$replies" | awk -F'\t' -v b="$(basename "$f")" -v s="$from" '$1==b && $2!=s {x=1} END {exit !x}'
       then st=replied; else st=waiting; fi
@@ -990,8 +996,9 @@ cmd_sent() {  # my open tasks; a task the recipient has answered is "replied", t
       if [ "$st" = waiting ]; then wait="$wait$f"$'\n'; else rep="$rep$f"$'\n'; fi; n=$((n+1))
     done < <(find "$d" -name '*.md' -not -name README.md -not -path '*/.git/*' -not -path '*/done/*' -type f 2>/dev/null | sort)
   done
-  [ "$n" -gt 0 ] || { echo "no open tasks of mine"; return 0; }
+  [ "$n" -gt 0 ] || { echo "no open tasks of mine${days:+ older than $days days}"; return 0; }
   printf "%s%s" "$wait" "$rep"
+  [ -z "$days" ] || echo "open for more than $days days: close what is already handled with xchg done <file>"
   [ -z "$rep" ] || echo "replied: the recipient answered; once the result is accepted, close it yourself: xchg done <file>"
 }
 hist_find() {  # <hub> <file name> -> "commit<TAB>path" of the commit that added it
@@ -1049,9 +1056,10 @@ send_common() {  # <kind> <address> <slug> [flags] < body
 cmd_send() { require_hubs; [ $# -ge 2 ] || udie "send <address> <slug> [--re file] [--ref where] [--attach file]... < body"; send_common task "$@"; }
 cmd_post() { require_hubs; [ $# -ge 2 ] || udie "post <address> <slug> [--re file] [--ref where] [--attach file]... < body"; send_common message "$@"; }
 cmd_reply() {
-  require_hubs; [ $# -ge 2 ] || udie "reply <file> <slug> [--task|--message] [--attach file]..."
-  local src="$1" slug="$2"; shift 2; local kind=message att=() links=""
+  require_hubs; [ $# -ge 2 ] || udie "reply <file> <slug> [--task|--message] [--ref where] [--attach file]..."
+  local src="$1" slug="$2"; shift 2; local kind=message ref="" att=() links=""
   while [ $# -gt 0 ]; do case "$1" in --task) kind=task; shift;; --message|--note) kind=message; shift;;
+    --ref) [ $# -ge 2 ] || udie "reply: --ref needs a value"; ref="$2"; shift 2;;
     --attach) att[${#att[@]}]="$2"; shift 2;; *) udie "reply: unknown flag $1";; esac; done
   [ -t 0 ] && udie "reply: the reply body is expected on stdin"
   local body; body=$(cat)
@@ -1065,7 +1073,7 @@ cmd_reply() {
   parse_addr "$to"; check_contract "$A_HUB"
   [ ${#att[@]} -eq 0 ] || links=$(upload_all "$A_HUB" "${att[@]}") || exit 1
   local me nf; me=$(sender_id "$A_HUB")
-  nf=$(write_msg "$A_HUB" "$A_REL" "$kind" "$me" "$A_LABEL" "$slug" "$(basename "$L_REL")" "" "" "$body" "$links")
+  nf=$(write_msg "$A_HUB" "$A_REL" "$kind" "$me" "$A_LABEL" "$slug" "$(basename "$L_REL")" "$ref" "" "$body" "$links")
   warn_secrets "$body"; warn_no_project "$A_HUB"
   hub_push "$A_HUB" "[xchg] $me -> $A_LABEL: $slug (reply)" || true
   [ "$(kind_of "$f")" = task ] || mark_read "$L_HUB" "$(dirname "$L_REL")" "$L_REL"   # answered is handled; a task stays until done
@@ -1599,7 +1607,7 @@ Address: [hub:]part[:part] — all | @project | person | @project:person (part o
   read <file>                               read a whole message
   send <address> <slug> [--re f] [--ref x] [--attach file]...   task: do it once, it gets closed
   post <address> <slug> [--re f] [--ref x] [--attach file]...   message: read it, answer if there is something to say
-  reply <file> <slug> [--task] [--attach file]...   reply to the sender (a message; --task for a task)
+  reply <file> <slug> [--task] [--ref where] [--attach file]...   reply to the sender (a message; --task for a task)
   attach <file>... [--hub H]                put files into the hub, print links to paste into a message
   attachments <file>                        what a message carries
   get <file | att:hash/name> [--to DIR]     download attachments, print where they are
@@ -1607,7 +1615,7 @@ Address: [hub:]part[:part] — all | @project | person | @project:person (part o
   done <file>                               close a task (moves to done/)
   seen [address|file]                       mark messages as read
   mute <file>...                            not mine: don't show it or wake this agent
-  sent                                      my open tasks: waiting, or replied to
+  sent [--stale [days]]                     my open tasks: waiting, or replied to; --stale: only older than days (14)
   thread <file>                             the conversation by re:, including closed ones
   forward <file> <address> [--note '...']   forward to another hub
   who [query] [--hub H]                     hub contacts
@@ -1639,7 +1647,7 @@ main() {
     mute) shift; cmd_mute "$@";;
     inbox) shift; cmd_inbox "$@";;   read) shift; cmd_read "$@";;      send) shift; cmd_send "$@";;
     post) shift; cmd_post "$@";;     reply) shift; cmd_reply "$@";;    claim) shift; cmd_claim "$@";;
-    done) shift; cmd_done "$@";;     seen) shift; cmd_seen "${1:-}";;  sent) cmd_sent;;
+    done) shift; cmd_done "$@";;     seen) shift; cmd_seen "${1:-}";;  sent) shift; cmd_sent "$@";;
     thread) shift; cmd_thread "$@";; forward) shift; cmd_forward "$@";; who) shift; cmd_who "$@";;
     contact) shift; cmd_contact "$@";; agent) cmd_agent;;              projects) shift; cmd_projects "$@";;
     hubs) cmd_hubs;;                 hub) shift; cmd_hub "$@";;        log) shift; cmd_log "$@";;

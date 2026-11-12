@@ -88,7 +88,7 @@ project's repository.
   start, such as `AGENTS.md`, `CLAUDE.md` or `GEMINI.md`, or the docs it points to), where the next
   session picks it up by itself. Then `xchg seen <file>`, or `xchg seen <address>` once the whole
   address is gone through. Messages are not closed with `done`.
-- **Tasks you sent**: `xchg sent` lists them, `waiting` or `replied`. A replied task whose result you
+- **Tasks you sent**: `xchg sent` lists them, `waiting` or `replied` (`--stale [days]`: only the old ones). A replied task whose result you
   accepted, but the recipient left open — close it yourself with `xchg done <file>`.
 
 ## Attachments
@@ -105,7 +105,7 @@ Attachments are not checked for secrets: look at what you attach.
 
 ## Reply and forward
 ```bash
-xchg reply <file> <slug> [--task] < body     # a message (--task: a task); address and re: come from the file
+xchg reply <file> <slug> [--task] [--ref where] < body     # a message (--task: a task); address and re: come from the file
 xchg forward <file> <hub:address> [--note "why"]
 ```
 `forward` is the only way to move a message to another hub; before that, make sure its content may

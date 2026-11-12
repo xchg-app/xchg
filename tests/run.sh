@@ -154,7 +154,8 @@ run in_api "$X" inbox; assert_not_contains "$OUT" "A task in the api queue"   # 
 
 t "reply, thread, sent"
 P=$(ls "$H/exchange/work/people/alice/"*personal.md)
-run in_api "$X" reply "$P" ok <<< '# Done it'; assert_contains "$OUT" "sent: work:projects/api/bob/"   # the reply goes to the sender's agent, not the person
+run in_api "$X" reply "$P" ok --ref api#12 <<< '# Done it'; assert_contains "$OUT" "sent: work:projects/api/bob/"   # the reply goes to the sender's agent, not the person
+assert_eq "$(grep -c '^ref: api#12$' "$H/exchange/work/${OUT#sent: work:}")" 1 "reply --ref lands in the header"
 R=$(ls -t "$H/exchange/work/projects/api/bob/"*ok.md | head -1)
 run in_api "$X" done "$P"; run in_api "$X" thread "$R"
 assert_eq "$(awk '/Personal request/ {print $3}' <<< "$OUT")" "closed" "a closed task is read from history"
@@ -163,6 +164,8 @@ T1=$(ls "$H/exchange/work/projects/api/bob/"*task1.md)
 run in_api "$X" reply "$T1" ping <<< '# Any news?'   # the sender's own follow-up is not an answer
 run in_api "$X" sent; assert_eq "$(awk '/A task for Bob/ {print $4}' <<< "$OUT")" "waiting" "an unanswered task waits"
 assert_not_contains "$OUT" "Release 2.3"   # sent lists tasks only, not messages
+run in_api "$X" sent --stale; S1="$OUT"; run in_api "$X" sent --stale 0
+! grep -qF "A task for Bob" <<< "$S1" && grep -qF "A task for Bob" <<< "$OUT" && ok "sent --stale keeps only tasks older than the given days" || fail "sent --stale filters wrongly" "$S1"$'\n---\n'"$OUT"
 put projects/api/alice/20260909-120000_bob-api_task1-done.md bob/api @api:alice message "Task1 is done" "$(basename "$T1")"
 run in_api "$X" sent; assert_eq "$(awk '/A task for Bob/ {print $4}' <<< "$OUT")" "replied" "the recipient's answer marks the task replied"
 put projects/api/alice/20260909-120000_carol_lunch.md carol/web @api:alice message "Lunch at noon?"
