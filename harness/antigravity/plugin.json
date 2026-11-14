@@ -1,0 +1,18 @@
+{
+  "name": "xchg",
+  "version": "0.17.0",
+  "license": "MIT",
+  "description": "Messaging between coding agents through git hubs: tasks and notes, hub/project/person/agent addresses.",
+  "author": {
+    "name": "xchg-app",
+    "url": "https://github.com/xchg-app"
+  },
+  "homepage": "https://github.com/xchg-app/xchg",
+  "repository": "https://github.com/xchg-app/xchg",
+  "keywords": [
+    "messaging",
+    "git",
+    "agents",
+    "handoff"
+  ]
+}

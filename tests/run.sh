@@ -61,11 +61,11 @@ else ok "no ssh-keygen: key tests skipped"; fi
 t "harness packages"
 PKG="$SB/packages"; VER=$(jq -r .version "$ROOT/harness/gemini/gemini-extension.json")
 BAD=""
-for p in "claude-code .claude-plugin/plugin.json" "codex .codex-plugin/plugin.json" "gemini gemini-extension.json"; do
+for p in "claude-code .claude-plugin/plugin.json" "codex .codex-plugin/plugin.json" "gemini gemini-extension.json" "antigravity plugin.json"; do
   set -- $p
   run "$ROOT/tools/package.sh" "$1" "$PKG/$1"; [ "$RC" = 0 ] && [ "$(jq -r .version "$PKG/$1/$2")" = "$VER" ] || BAD="$BAD $1"
 done
-assert_eq "$BAD" "" "the three packages build, with one version"
+assert_eq "$BAD" "" "the four packages build, with one version"
 # a clone on a machine with core.autocrlf=true (how Windows git is set up) still gets a working client
 BARE="$SB/gemini-plugin.git"; git init -q --bare "$BARE"
 run env XCHG_PACKAGE_REPO="$BARE" "$ROOT/tools/publish.sh" gemini "$VER"
@@ -84,6 +84,11 @@ else ok "no codex CLI: codex install skipped"; fi
 if command -v gemini >/dev/null 2>&1; then PH="$SB/gemini-home"; mkdir -p "$PH"
   run bash -c "yes y | HOME='$PH' gemini extensions install '$PKG/gemini' --consent"; assert_eq "$RC" 0 "gemini: the extension installs"
 else ok "no gemini CLI: gemini install skipped"; fi
+if command -v agy >/dev/null 2>&1; then PH="$SB/agy-home"; mkdir -p "$PH"
+  run env HOME="$PH" agy plugin validate --strict "$PKG/antigravity"; RC1=$RC
+  run env HOME="$PH" agy plugin install "$PKG/antigravity" --yes
+  [ "$RC1" = 0 ] && [ "$RC" = 0 ] && ok "antigravity: the plugin validates and installs" || fail "antigravity: the plugin doesn't validate or install" "$OUT"
+else ok "no agy CLI: antigravity install skipped"; fi
 
 t "projects and agents"
 run in_api "$X" projects add api --repo "git@example.com:team/api.git"; assert_contains "$OUT" "agent registered: work:@api:alice"
@@ -189,6 +194,9 @@ run in_api hook SessionStart "$X" inbox --brief; assert_contains "$OUT" "Not for
 put projects/api/alice/20260910-095000_bob_quote.md bob/api @api:alice task 'Quote "this" and back\slash'
 run in_api hook BeforeAgent "$X" inbox --brief
 assert_contains "$(jq -r .hookSpecificOutput.additionalContext <<< "$OUT")" 'Quote "this" and back\slash'   # quotes and backslashes are escaped
+# Antigravity runs hooks outside the project directory and passes hookEventName (camelCase) + cwd
+run bash -c "cd '$SB' && printf '{\"hookEventName\":\"SessionStart\",\"cwd\":\"%s\"}' '$SB/repos/api' | '$X' inbox --brief"
+assert_contains "$(jq -r '.injectSteps[0].systemMessage.systemMessage' <<< "$OUT")" 'Quote "this" and back\slash'
 NM="$H/exchange/work/people/alice/20260910-100000_carol_notmine.md"
 run in_api "$X" mute "$NM"; run in_api "$X" inbox; assert_not_contains "$OUT" "Not for the api agent"
 

@@ -5,7 +5,7 @@
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-usage() { echo "usage: tools/publish.sh <claude-code|codex|gemini> <version> [--dry-run]" >&2; exit 2; }
+usage() { echo "usage: tools/publish.sh <claude-code|codex|gemini|antigravity> <version> [--dry-run]" >&2; exit 2; }
 
 name="${1:-}"; version="${2:-}"; dry=0
 [ -n "$name" ] && [ -n "$version" ] || usage

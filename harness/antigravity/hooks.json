@@ -1,0 +1,18 @@
+{
+  "xchg": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "\"./bin/xchg\" inbox --brief 2>/dev/null || true",
+        "timeout": 30
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "\"./bin/xchg\" inbox --brief --max-age 300 2>/dev/null || true",
+        "timeout": 30
+      }
+    ]
+  }
+}

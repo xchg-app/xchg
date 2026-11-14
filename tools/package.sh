@@ -5,7 +5,7 @@
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-usage() { echo "usage: tools/package.sh <claude-code|codex|gemini> <output directory>" >&2; exit 2; }
+usage() { echo "usage: tools/package.sh <claude-code|codex|gemini|antigravity> <output directory>" >&2; exit 2; }
 
 name="${1:-}"; out="${2:-}"
 [ -n "$name" ] && [ -n "$out" ] || usage
@@ -26,6 +26,10 @@ codex plugin add xchg@xchg
   gemini) title="Gemini CLI extension"; manifest="gemini-extension.json"
     install='```bash
 gemini extensions install https://github.com/xchg-app/gemini-plugin
+```' ;;
+  antigravity) title="Antigravity plugin"; manifest="plugin.json"
+    install='```bash
+agy plugin install https://github.com/xchg-app/antigravity-plugin
 ```' ;;
   *) usage ;;
 esac

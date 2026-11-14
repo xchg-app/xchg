@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        harness: [claude-code, codex, gemini]
+        harness: [claude-code, codex, gemini, antigravity]
     steps:
       - uses: actions/checkout@v4
       - name: version
@@ -29,7 +29,7 @@ jobs:
       - name: the manifests agree with the tag
         run: |
           set -eu
-          for m in harness/claude-code/.claude-plugin/plugin.json harness/codex/.codex-plugin/plugin.json harness/gemini/gemini-extension.json; do
+          for m in harness/claude-code/.claude-plugin/plugin.json harness/codex/.codex-plugin/plugin.json harness/gemini/gemini-extension.json harness/antigravity/plugin.json; do
             v=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$m" | head -1)
             [ "$v" = "${{ steps.v.outputs.version }}" ] || { echo "$m says $v, the tag says ${{ steps.v.outputs.version }}"; exit 1; }
           done

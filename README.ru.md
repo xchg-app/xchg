@@ -110,13 +110,14 @@ xchg — клиент командной строки, поэтому им мо�
 | Claude Code | `/plugin marketplace add xchg-app/claude-code-plugin`, затем `/plugin install xchg@xchg` |
 | Codex CLI | `codex plugin marketplace add xchg-app/codex-plugin`, затем `codex plugin add xchg@xchg` |
 | Gemini CLI | `gemini extensions install https://github.com/xchg-app/gemini-plugin` |
+| Antigravity | `agy plugin install https://github.com/xchg-app/antigravity-plugin` |
 
 Hermes Agent и Cline настраивает команда `xchg install`, а с любым другим харнессом, у которого есть
 оболочка, xchg работает через скилл ([docs/ru/harnesses.md](docs/ru/harnesses.md)).
 
 Или дайте агенту ссылку на этот репозиторий и попросите поставить xchg. Перезапустите сессию, чтобы
-пакет загрузился, и выполните команду настройки (`/xchg:setup <url хаба>` в Claude Code и Gemini CLI,
-`$xchg-setup` в Codex CLI) — агент подключит хаб, зарегистрирует вас в книге контактов и заведёт
+пакет загрузился, и выполните команду настройки (`/xchg:setup <url хаба>` в Claude Code, Gemini CLI
+и Antigravity, `$xchg-setup` в Codex CLI) — агент подключит хаб, зарегистрирует вас в книге контактов и заведёт
 текущий репозиторий проектом. Дальше `xchg inbox`.
 
 Регистрироваться отдельно не нужно: при подключении к хабу вы попадаете в его книгу контактов,

@@ -34,6 +34,7 @@ tags: [memory/repo, architecture]
 | Claude Code | `harness/claude-code/` | `claude-code-plugin` | `.claude-plugin/plugin.json`; маркетплейс `.claude-plugin/marketplace.json` → `./` | `hooks/hooks.json` (подхватывается сам), `${CLAUDE_PLUGIN_ROOT}` | `bin/` в PATH |
 | Codex CLI | `harness/codex/` | `codex-plugin` | `.codex-plugin/plugin.json`; маркетплейс `.agents/plugins/marketplace.json` → `./` | `hooks/hooks.json` (стандартный путь), `${PLUGIN_ROOT}` | в PATH не попадает — путь говорит скилл |
 | Gemini CLI | `harness/gemini/` | `gemini-plugin` | `gemini-extension.json` | `hooks/hooks.json` (событие `BeforeAgent`, таймаут в мс), `${extensionPath}` | в PATH не попадает |
+| Antigravity | `harness/antigravity/` | `antigravity-plugin` | `plugin.json` | `hooks.json` в корне (`SessionStart`, `PreInvocation`), `./bin/xchg` | `bin/` в PATH |
 
 Харнессы без пакета настраивает `cmd_install` по `harness_info`: `H_STYLE` — как писать хуки
 (`json` — файл настроек, правит jq; `yaml` — печатаем строки, YAML не трогаем; `scripts` — по
@@ -57,14 +58,16 @@ tags: [memory/repo, architecture]
 
 Общее для всех: `bin/xchg`, скиллы `skills/exchange` и `skills/xchg-setup` (настройка), обёртки
 команды `/xchg:setup` — `harness/claude-code/commands/setup.md` и
-`harness/gemini/commands/xchg/setup.toml`. Версия одна во всех трёх манифестах (тест сверяет).
+`harness/gemini/commands/xchg/setup.toml` (в Antigravity скилл `xchg-setup` внутри плагина `xchg`
+сам становится командой `/xchg:setup`). Версия одна во всех четырёх манифестах (тест сверяет).
 
-Хуки всех трёх зовут `xchg inbox --brief`. Клиент читает `hook_event_name` из JSON на stdin
-(`SessionStart` → всё открытое, любое другое → только новое) и отвечает
-`{"hookSpecificOutput":{"hookEventName":…,"additionalContext":…}}` (`hook_print`, `json_str`); без JSON
+Хуки всех четырёх зовут `xchg inbox --brief`. Клиент читает `hook_event_name` или `hookEventName`
+(Antigravity) из JSON на stdin (`SessionStart` → всё открытое, любое другое → только новое) и отвечает
+`{"hookSpecificOutput":{"hookEventName":…,"additionalContext":…}}` или (при `hookEventName` / `--hook-format antigravity`)
+`{"injectSteps":[{"systemMessage":{"systemMessage":…}}]}` (`hook_print`, `json_str`); без JSON
 на stdin — текстом. Нечего сказать — 0 байт.
 
-`PLUGIN_MODE`: `$XCHG_ROOT` внутри `~/.claude/plugins/`, `~/.codex/plugins/` или `~/.gemini/extensions/`.
+`PLUGIN_MODE`: `$XCHG_ROOT` внутри `~/.claude/plugins/`, `~/.codex/plugins/`, `~/.gemini/extensions/` или `~/.gemini/config/plugins/`.
 Тогда нет самообновления (обновляет харнесс), `install` только создаёт конфиг, `cmd_version` берёт
 версию из манифеста. Отдельная установка (`install`) настраивает каждый найденный харнесс по таблице
 `harness_info`: файл хуков, имена событий, единицы таймаута, каталог скиллов.
