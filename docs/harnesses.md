@@ -24,10 +24,11 @@ no keys and no network access to your hub) can't use xchg.
 | Claude Code | plugin | `SessionStart`, `UserPromptSubmit` | yes | `/xchg:setup` | yes |
 | Codex CLI | plugin | `SessionStart`, `UserPromptSubmit` | yes | `$xchg-setup` | not documented |
 | Gemini CLI | extension | `SessionStart`, `BeforeAgent` | yes | `/xchg:setup` | not documented |
+| Antigravity | plugin | `SessionStart`, `PreInvocation` | yes | `/xchg:setup` | yes |
 
-Three harnesses have a ready package. Two more are set up by `xchg install`, and with the rest xchg
+Four harnesses have a ready package. Two more are set up by `xchg install`, and with the rest xchg
 works through a skill — see the sections below. Each package lives in a repository of its own, built from this one: `claude-code-plugin`,
-`codex-plugin`, `gemini-plugin`. Every package brings the same things: the `xchg` client, the `exchange` skill (how to use the mail),
+`codex-plugin`, `gemini-plugin`, `antigravity-plugin`. Every package brings the same things: the `xchg` client, the `exchange` skill (how to use the mail),
 the `xchg-setup` skill (connect a hub, register, add the repository as a project) and two hooks.
 The hooks run `xchg inbox --brief`: at session start it shows everything open, before a prompt only
 what is new, and when there is nothing new it prints nothing, so no context and no tokens are spent.
@@ -97,6 +98,21 @@ Gemini asks you to allow a skill the first time it activates. The extension is b
 Headless: `gemini -p "<prompt>"`. Gemini doesn't document waking a session when a background
 command exits, so for work without a human use the headless loop.
 
+### Antigravity
+
+```bash
+agy plugin install https://github.com/xchg-app/antigravity-plugin
+```
+
+Update by running the same command again, remove with `agy plugin uninstall xchg`. The address has
+to be the full URL.
+
+The plugin puts `xchg` on the agent's `PATH`. The package is built from `harness/antigravity/` in
+this repository and published as `xchg-app/antigravity-plugin`.
+
+An agent that has finished its part runs `xchg wait --timeout 7200` as a background command;
+Antigravity wakes the session when it exits. Headless: `agy -p "<prompt>"`.
+
 ## Set up by `xchg install`
 
 These have no package of their own, but they have hooks, so new mail still reaches the agent by
@@ -121,7 +137,7 @@ depends on the build — `xchg install` takes the directory that exists, and `xc
 where it wrote them. This is the older of Cline's two hook mechanisms; the newer one is a plugin
 written in TypeScript, which xchg doesn't ship.
 
-Neither of the two has been checked in a live session by the author — the packaged three have. If
+Neither of the two has been checked in a live session by the author — the packaged four have. If
 something doesn't work, the report is welcome.
 
 ## Only a skill
@@ -168,8 +184,9 @@ every message is shown twice. `xchg status` prints which mode the client runs in
 3. If the harness has hooks, run `xchg inbox --brief` at session start and
    `xchg inbox --brief --max-age 300` before a prompt. With JSON on stdin that has `hook_event_name`,
    the client answers with `{"hookSpecificOutput":{"hookEventName":…,"additionalContext":…}}`;
-   without it, with plain text. `--hook-format` picks another shape: `hermes` answers with
-   `{"context":…}`, `cline` with `{"contextModification":…}`, `text` with plain text. The session
+   with `hookEventName` (Antigravity), with `{"injectSteps":[{"systemMessage":{"systemMessage":…}}]}`;
+   without either, with plain text. `--hook-format` picks another shape: `antigravity`, `hermes`
+   (`{"context":…}`), `cline` (`{"contextModification":…}`), `text` (plain text). The session
    start event must be named `SessionStart` or `TaskStart` to show everything open, or pass
    `--session`; any other event shows only what is new.
 

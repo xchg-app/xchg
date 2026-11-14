@@ -15,7 +15,7 @@ XCHG_ROOT="$(cd "$(dirname "$SELF")/.." && pwd -P)"
 
 # Installed as a harness package (plugin/extension)? Then the harness owns the files, hooks and updates.
 case "$XCHG_ROOT" in
-  "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/"*|"${CODEX_HOME:-$HOME/.codex}/plugins/"*|"$HOME/.gemini/extensions/"*) PLUGIN_MODE=1;;
+  "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/"*|"${CODEX_HOME:-$HOME/.codex}/plugins/"*|"$HOME/.gemini/extensions/"*|"$HOME/.gemini/config/plugins/"*) PLUGIN_MODE=1;;
   *) PLUGIN_MODE=0;;
 esac
 CONF_DIR="${XCHG_CONF_DIR:-$HOME/.config/xchg}"
@@ -27,7 +27,7 @@ SHOW_ALL=0                             # show other projects too
 SHOW_HISTORY=0                         # show messages already read
 UNSHOWN=0                              # list only what this agent hasn't been shown yet (hooks, wait)
 HOOK_EVENT=""                          # agent hook event (from JSON on stdin)
-HOOK_FORMAT=""                         # how the harness wants hook output: claude|hermes|cline|text
+HOOK_FORMAT=""                         # how the harness wants hook output: claude|antigravity|hermes|cline|text
 HOOK_SESSION=0                         # the hook is the session-start one: show everything open
 PUSH_FAILED=0                          # a write stayed in the local hub clone: the command exits with 4
 # agent hooks run without ssh-agent in the environment: pick up the usual socket if present
@@ -412,9 +412,11 @@ addr_label() {  # <hub> <relative path> -> short address label
 
 # --- agent identity ----------------------------------------------------------------------------
 repo_root() {  # root of the main repository (the primary one for a worktree); exit 1 outside git
-  local common; common=$(git rev-parse --git-common-dir 2>/dev/null) || return 1
+  local common r; common=$(git rev-parse --git-common-dir 2>/dev/null) || return 1
   common=$(cd "$common" 2>/dev/null && pwd -P) || return 1
-  dirname "$common"
+  r=$(dirname "$common")
+  [ "$PLUGIN_MODE" = 1 ] && [ "$r" = "$XCHG_ROOT" ] && return 1
+  echo "$r"
 }
 # The session's project in a hub is found in this order, each step falling back to the next:
 # git config xchg.project in the clone; the project whose card names this clone's origin; the name
@@ -739,9 +741,10 @@ cmd_inbox() {
     --all) SHOW_ALL=1; shift;; --history) SHOW_HISTORY=1; shift;;
     --hook-format) HOOK_FORMAT="$2"; shift 2;; --session) HOOK_SESSION=1; shift;;
     *) udie "inbox [--brief] [--all] [--history] [--max-age N] [--hub H] [--hook-format F] [--session]";; esac; done
+  [ "$brief" = 1 ] && read_hook_input
   if [ ${#HUBS[@]} -eq 0 ]; then
     # hubs that are all registered but not cloned: say so once a session, otherwise the inbox just looks empty
-    if [ "$brief" = 1 ]; then read_hook_input
+    if [ "$brief" = 1 ]; then
       case "$HOOK_EVENT" in SessionStart|TaskStart) HOOK_SESSION=1;; esac
       [ "$HOOK_SESSION" = 1 ] && hook_print "$(noclone_note)"; return 0; fi
     require_hubs; fi
@@ -750,7 +753,6 @@ cmd_inbox() {
   if [ "$brief" = 1 ]; then
     # Hook: on session start, everything open (a new session doesn't remember the backlog); otherwise only
     # what this agent hasn't been shown yet, or the same lines would enter the context on every prompt.
-    read_hook_input
     case "$HOOK_EVENT" in SessionStart|TaskStart) mode=all;; esac
     [ "$HOOK_SESSION" = 1 ] && mode=all
     [ "$mode" = new ] && UNSHOWN=1
@@ -881,22 +883,33 @@ record_shown() {  # <inbox lines>: mark everything in them as shown, one write p
 read_hook_input() {  # an agent hook passes JSON on stdin; run by hand, stdin is a terminal: don't wait
   [ -t 0 ] && return 0
   local j=""; IFS= read -r -t 1 -d '' j || true
-  HOOK_EVENT=$(printf '%s' "$j" | sed -n 's/.*"hook_event_name"[[:space:]]*:[[:space:]]*"\([A-Za-z_]*\)".*/\1/p' | head -1)
   # A harness whose session-start hook can't answer marks the first turn of the session instead.
   # The mark is only believed outside the prompt and the quoted history: those carry the user's text,
   # and a message that merely mentions the mark would dump the whole inbox into the context again.
-  local head="$j"
-  if have jq; then printf '%s' "$j" | jq -e '.. | objects | select(has("is_first_turn")) | .is_first_turn == true' >/dev/null 2>&1 && HOOK_SESSION=1
+  local head="$j" cwd=""
+  head="${head%%\"user_message\"*}"; head="${head%%\"conversation_history\"*}"; head="${head%%\"lastUserInput\"*}"; head="${head%%\"prompt\"*}"
+  HOOK_EVENT=$(printf '%s' "$head" | sed -n 's/.*"hook_event_name"[[:space:]]*:[[:space:]]*"\([A-Za-z_]*\)".*/\1/p' | head -1)
+  if [ -z "$HOOK_EVENT" ]; then
+    HOOK_EVENT=$(printf '%s' "$head" | sed -n 's/.*"hookEventName"[[:space:]]*:[[:space:]]*"\([A-Za-z_]*\)".*/\1/p' | head -1)
+    [ -n "$HOOK_EVENT" ] && [ -z "$HOOK_FORMAT" ] && HOOK_FORMAT=antigravity
+  fi
+  if have jq; then
+    printf '%s' "$j" | jq -e '.. | objects | select(has("is_first_turn")) | .is_first_turn == true' >/dev/null 2>&1 && HOOK_SESSION=1
+    cwd=$(printf '%s' "$j" | jq -r '.cwd // empty' 2>/dev/null || true)
   else
-    head="${head%%\"user_message\"*}"; head="${head%%\"conversation_history\"*}"
     case "$head" in *'"is_first_turn": true'*|*'"is_first_turn":true'*) HOOK_SESSION=1;; esac
+    cwd=$(printf '%s' "$head" | sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"\\]*\)".*/\1/p' | head -1)
+  fi
+  # Antigravity runs a hook in the directory of hooks.json and passes the workspace in .cwd
+  if [ -n "$cwd" ] && [ -d "$cwd" ] && [ "$cwd" != "$PWD" ]; then
+    cd "$cwd" && resolve_projects
   fi
   return 0
 }
 # Hook events differ by harness, and so does the field a hook answers with: the text reaches the model as
-# hookSpecificOutput.additionalContext, as context, or as contextModification, depending on who asks.
+# hookSpecificOutput.additionalContext, injectSteps, context, or contextModification, depending on who asks.
 # The session-start event (SessionStart, TaskStart, --session) shows everything open, a prompt event
-# (UserPromptSubmit, BeforeAgent) only what is new. Plain stdout is the answer outside a hook; some
+# (UserPromptSubmit, BeforeAgent, PreInvocation) only what is new. Plain stdout is the answer outside a hook; some
 # harnesses show it to the user instead of the model, so never rely on it there.
 # Nothing to say = 0 bytes, never "{}".
 hook_print() {  # <text>
@@ -906,10 +919,11 @@ hook_print() {  # <text>
   [ "$fmt" = text ] && { printf '%s\n' "$1"; return 0; }
   body=$(printf '%s\n' "$1" | json_str)
   case "$fmt" in
-    claude) printf '{"hookSpecificOutput":{"hookEventName":"%s","additionalContext":"%s"}}\n' "${HOOK_EVENT:-SessionStart}" "$body";;
-    hermes) printf '{"context":"%s"}\n' "$body";;
-    cline)  printf '{"contextModification":"%s"}\n' "$body";;
-    *) die "unknown hook format '$fmt' (claude, hermes, cline, text)";;
+    claude)      printf '{"hookSpecificOutput":{"hookEventName":"%s","additionalContext":"%s"}}\n' "${HOOK_EVENT:-SessionStart}" "$body";;
+    antigravity) printf '{"injectSteps":[{"systemMessage":{"systemMessage":"%s"}}]}\n' "$body";;
+    hermes)      printf '{"context":"%s"}\n' "$body";;
+    cline)       printf '{"contextModification":"%s"}\n' "$body";;
+    *) die "unknown hook format '$fmt' (claude, antigravity, hermes, cline, text)";;
   esac
 }
 # "Muted" is a message not for this agent: don't show it and don't wake the agent. The mark is local and
@@ -1263,7 +1277,7 @@ cmd_hubs() {
 # to this client's version. README.md carries the contract and, right after it, the client release
 # the text came from (template:), so an older client never rolls the rules back.
 client_release() {  # the release version, also in a developer clone (cmd_version shows a commit there)
-  local m v; for m in .claude-plugin/plugin.json .codex-plugin/plugin.json gemini-extension.json harness/claude-code/.claude-plugin/plugin.json; do
+  local m v; for m in .claude-plugin/plugin.json .codex-plugin/plugin.json gemini-extension.json plugin.json harness/claude-code/.claude-plugin/plugin.json; do
     v=$(sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p' "$XCHG_ROOT/$m" 2>/dev/null | head -1); [ -n "$v" ] && { echo "$v"; return 0; }; done
   echo 0
 }
@@ -1576,7 +1590,7 @@ cmd_status() {
 }
 cmd_version() {  # a commit in a developer clone, the manifest version in an installed package
   if [ "$PLUGIN_MODE" = 0 ]; then git -C "$XCHG_ROOT" log -1 --format='%h %ci %s' 2>/dev/null && return 0; fi
-  local m v=""; for m in .claude-plugin/plugin.json .codex-plugin/plugin.json gemini-extension.json; do
+  local m v=""; for m in .claude-plugin/plugin.json .codex-plugin/plugin.json gemini-extension.json plugin.json; do
     v=$(sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p' "$XCHG_ROOT/$m" 2>/dev/null | head -1); [ -n "$v" ] && break; done
   echo "${v:-unknown}"
 }

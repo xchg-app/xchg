@@ -47,7 +47,7 @@ while xchg wait --timeout 7200; do
 done
 ```
 
-`<agent>` is your harness's one-shot command, such as `claude -p`, `codex exec` or `gemini -p`
+`<agent>` is your harness's one-shot command, such as `claude -p`, `codex exec`, `gemini -p` or `agy -p`
 ([harnesses.md](harnesses.md)). A fresh session for every message; state between them lives in the repository. For work that runs
 for days this is more reliable than one long session: the context neither grows nor gets compacted.
 The loop ends when `wait` exits on timeout.
