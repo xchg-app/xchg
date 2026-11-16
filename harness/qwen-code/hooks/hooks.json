@@ -1,0 +1,27 @@
+{
+  "description": "Shows new xchg messages at session start and before each user message. When there is nothing new the output is empty, so no context or tokens are spent.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${QWEN_PLUGIN_ROOT}/bin/xchg\" inbox --brief 2>/dev/null || true",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${QWEN_PLUGIN_ROOT}/bin/xchg\" inbox --brief --max-age 300 2>/dev/null || true",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

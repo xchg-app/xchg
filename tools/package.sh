@@ -5,7 +5,7 @@
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-usage() { echo "usage: tools/package.sh <claude-code|codex|gemini> <output directory>" >&2; exit 2; }
+usage() { echo "usage: tools/package.sh <claude-code|qwen-code|codex|gemini> <output directory>" >&2; exit 2; }
 
 name="${1:-}"; out="${2:-}"
 [ -n "$name" ] && [ -n "$out" ] || usage
@@ -17,6 +17,11 @@ case "$name" in
     install='```
 /plugin marketplace add xchg-app/claude-code-plugin
 /plugin install xchg@xchg
+```' ;;
+  qwen-code) title="Qwen Code plugin"; manifest=".qwen-plugin/plugin.json"
+    install='```bash
+qwen plugins marketplace add xchg-app/qwen-code-plugin
+qwen plugins install xchg@xchg
 ```' ;;
   codex) title="Codex CLI plugin"; manifest=".codex-plugin/plugin.json"
     install='```bash

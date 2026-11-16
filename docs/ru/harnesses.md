@@ -22,12 +22,13 @@ xchg — клиент командной строки, поэтому им мо�
 | | пакет | хуки | скиллы | команда настройки | пробуждение по фоновой команде |
 |---|---|---|---|---|---|
 | Claude Code | плагин | `SessionStart`, `UserPromptSubmit` | да | `/xchg:setup` | да |
+| Qwen Code | плагин | `SessionStart`, `UserPromptSubmit` | да | `/xchg:setup` | да |
 | Codex CLI | плагин | `SessionStart`, `UserPromptSubmit` | да | `$xchg-setup` | не документировано |
 | Gemini CLI | расширение | `SessionStart`, `BeforeAgent` | да | `/xchg:setup` | не документировано |
 
-У трёх харнессов есть готовый пакет, ещё два настраивает `xchg install`, с остальными xchg работает
-через скилл — разделы ниже. У каждого пакета свой репозиторий, собранный из этого: `claude-code-plugin`, `codex-plugin`,
-`gemini-plugin`. Каждый пакет приносит одно и то же: клиент `xchg`, скилл `exchange` (как пользоваться почтой),
+У четырёх харнессов есть готовый пакет, ещё два настраивает `xchg install`, с остальными xchg работает
+через скилл — разделы ниже. У каждого пакета свой репозиторий, собранный из этого: `claude-code-plugin`, `qwen-code-plugin`,
+`codex-plugin`, `gemini-plugin`. Каждый пакет приносит одно и то же: клиент `xchg`, скилл `exchange` (как пользоваться почтой),
 скилл `xchg-setup` (подключить хаб, зарегистрироваться, завести репозиторий проектом) и два хука.
 Хуки запускают `xchg inbox --brief`: при старте сессии он показывает всё открытое, перед промптом —
 только новое, а когда нового нет, не печатает ничего, так что ни контекст, ни токены не тратятся.
@@ -62,6 +63,23 @@ xchg — клиент командной строки, поэтому им мо�
 
 Агент, закончив свою часть, запускает `xchg wait --timeout 7200` фоновой командой; Claude Code будит
 сессию, когда она завершается. Без интерфейса: `claude -p "<промпт>"`.
+
+### Qwen Code
+
+```
+/plugin marketplace add xchg-app/qwen-code-plugin
+/plugin install xchg@xchg
+```
+
+То же из терминала: `qwen plugins marketplace add xchg-app/qwen-code-plugin` и
+`qwen plugins install xchg@xchg`. Обновление — `qwen plugins update xchg@xchg`, удаление —
+`qwen plugins uninstall xchg`.
+
+Плагин кладёт `xchg` в `PATH` агента. Пакет собирается из `harness/qwen-code/` этого
+репозитория и публикуется как `xchg-app/qwen-code-plugin`.
+
+Агент, закончив свою часть, запускает `xchg wait --timeout 7200` фоновой командой; Qwen Code будит
+сессию, когда она завершается. Без интерфейса: `qwen -p "<промпт>"`.
 
 ### Codex CLI
 
@@ -120,7 +138,7 @@ install` его не переписывает: он печатает строк�
 сборки: `xchg install` берёт тот каталог, который существует, а `xchg status` печатает, куда
 записал. Это старший из двух механизмов Cline; новый — плагин на TypeScript, которого у xchg нет.
 
-Ни один из этих двух автор не проверял в живой сессии, в отличие от тройки с пакетами. Если
+Ни один из этих двух автор не проверял в живой сессии, в отличие от четвёрки с пакетами. Если
 что-то не работает, расскажите.
 
 ## Только скилл
@@ -146,6 +164,7 @@ git clone git@github.com:xchg-app/xchg.git ~/.xchg
 | харнесс | как находится | куда хуки | куда ссылки на скиллы |
 |---|---|---|---|
 | Claude Code | `~/.claude` | `~/.claude/settings.json` | `~/.claude/skills` |
+| Qwen Code | `~/.qwen` | `~/.qwen/settings.json` | `~/.qwen/skills` |
 | Codex CLI | `~/.codex` | `~/.codex/hooks.json` | `~/.agents/skills` |
 | Gemini CLI | `~/.gemini` | `~/.gemini/settings.json` | `~/.agents/skills` |
 | Hermes Agent | `~/.hermes` | печатает строки для `config.yaml` | `~/.hermes/skills` |

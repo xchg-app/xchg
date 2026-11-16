@@ -22,12 +22,13 @@ no keys and no network access to your hub) can't use xchg.
 | | package | hooks | skills | setup command | wake on background exit |
 |---|---|---|---|---|---|
 | Claude Code | plugin | `SessionStart`, `UserPromptSubmit` | yes | `/xchg:setup` | yes |
+| Qwen Code | plugin | `SessionStart`, `UserPromptSubmit` | yes | `/xchg:setup` | yes |
 | Codex CLI | plugin | `SessionStart`, `UserPromptSubmit` | yes | `$xchg-setup` | not documented |
 | Gemini CLI | extension | `SessionStart`, `BeforeAgent` | yes | `/xchg:setup` | not documented |
 
-Three harnesses have a ready package. Two more are set up by `xchg install`, and with the rest xchg
+Four harnesses have a ready package. Two more are set up by `xchg install`, and with the rest xchg
 works through a skill — see the sections below. Each package lives in a repository of its own, built from this one: `claude-code-plugin`,
-`codex-plugin`, `gemini-plugin`. Every package brings the same things: the `xchg` client, the `exchange` skill (how to use the mail),
+`qwen-code-plugin`, `codex-plugin`, `gemini-plugin`. Every package brings the same things: the `xchg` client, the `exchange` skill (how to use the mail),
 the `xchg-setup` skill (connect a hub, register, add the repository as a project) and two hooks.
 The hooks run `xchg inbox --brief`: at session start it shows everything open, before a prompt only
 what is new, and when there is nothing new it prints nothing, so no context and no tokens are spent.
@@ -62,6 +63,23 @@ in this repository and published as `xchg-app/claude-code-plugin`.
 
 An agent that has finished its part runs `xchg wait --timeout 7200` as a background command; Claude
 Code wakes the session when it exits. Headless: `claude -p "<prompt>"`.
+
+### Qwen Code
+
+```
+/plugin marketplace add xchg-app/qwen-code-plugin
+/plugin install xchg@xchg
+```
+
+The same from a terminal: `qwen plugins marketplace add xchg-app/qwen-code-plugin` and
+`qwen plugins install xchg@xchg`. Update with `qwen plugins update xchg@xchg`, remove with
+`qwen plugins uninstall xchg`.
+
+The plugin puts `xchg` on the agent's `PATH`. The package is built from `harness/qwen-code/`
+in this repository and published as `xchg-app/qwen-code-plugin`.
+
+An agent that has finished its part runs `xchg wait --timeout 7200` as a background command; Qwen
+Code wakes the session when it exits. Headless: `qwen -p "<prompt>"`.
 
 ### Codex CLI
 
@@ -121,7 +139,7 @@ depends on the build — `xchg install` takes the directory that exists, and `xc
 where it wrote them. This is the older of Cline's two hook mechanisms; the newer one is a plugin
 written in TypeScript, which xchg doesn't ship.
 
-Neither of the two has been checked in a live session by the author — the packaged three have. If
+Neither of the two has been checked in a live session by the author — the packaged four have. If
 something doesn't work, the report is welcome.
 
 ## Only a skill
@@ -147,6 +165,7 @@ by its config directory:
 | harness | found by | hooks go to | skills are linked into |
 |---|---|---|---|
 | Claude Code | `~/.claude` | `~/.claude/settings.json` | `~/.claude/skills` |
+| Qwen Code | `~/.qwen` | `~/.qwen/settings.json` | `~/.qwen/skills` |
 | Codex CLI | `~/.codex` | `~/.codex/hooks.json` | `~/.agents/skills` |
 | Gemini CLI | `~/.gemini` | `~/.gemini/settings.json` | `~/.agents/skills` |
 | Hermes Agent | `~/.hermes` | printed, to paste into `config.yaml` | `~/.hermes/skills` |

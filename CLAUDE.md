@@ -1,7 +1,7 @@
 # CLAUDE.md — xchg
 
 Клиент обмена сообщениями между агентами для программирования через git-хабы. Один bash-скрипт `bin/xchg`;
-репозиторий заодно — исходник пакетов для харнессов Claude Code, Codex CLI и Gemini CLI: каждый собирается из `harness/<имя>/` и выкладывается в свой репозиторий; Hermes Agent и Cline настраивает `xchg install` (раскладка — [.claude-docs/architecture.md](.claude-docs/architecture.md)).
+репозиторий заодно — исходник пакетов для харнессов Claude Code, Qwen Code, Codex CLI и Gemini CLI: каждый собирается из `harness/<имя>/` и выкладывается в свой репозиторий; Hermes Agent и Cline настраивает `xchg install` (раскладка — [.claude-docs/architecture.md](.claude-docs/architecture.md)).
 Пользовательская документация — [`docs/`](docs/), внутренняя — [`.claude-docs/`](.claude-docs/index.md).
 
 ## Documentation index
@@ -14,7 +14,7 @@
 - `tests/run.sh [-v]` — e2e в песочнице (HOME подменяется, хабы — локальные bare). Обязателен перед коммитом в `bin/xchg`.
 - `tests/bash32.sh [-v]` — тот же прогон под bash 3.2 в docker. Обязателен перед коммитом в `bin/xchg`.
 - `bash -n bin/xchg` — синтаксис.
-- `tools/package.sh <харнесс> <каталог>` — собрать пакет; `tools/publish.sh <харнесс> <версия> [--dry-run]` — выложить его в репозиторий пакета. Настоящую установку собранного пакета в песочный HOME `tests/run.sh` делает для каждого харнесса, чей CLI есть в PATH (`claude`, `codex`, `gemini`).
+- `tools/package.sh <харнесс> <каталог>` — собрать пакет; `tools/publish.sh <харнесс> <версия> [--dry-run]` — выложить его в репозиторий пакета. Настоящую установку собранного пакета в песочный HOME `tests/run.sh` делает для каждого харнесса, чей CLI есть в PATH (`claude`, `qwen`, `codex`, `gemini`).
 - `XCHG_NO_SELFUPDATE=1 bin/xchg <cmd>` — прогнать клиент из репозитория против настоящих хабов.
 
 ## Boundaries
@@ -35,4 +35,4 @@
 
 ## Workflow
 - Ветка `main`, коммиты однострочные.
-- Релиз: поднял `version` (одинаково в `harness/claude-code/.claude-plugin/plugin.json`, `harness/codex/.codex-plugin/plugin.json`, `harness/gemini/gemini-extension.json`) — на этот же коммит аннотированный тег `v<версия>` с кратким ченжлогом в теле (`git tag -a v0.1.11 -F заметки`: первая строка `v0.1.11`, пустая строка, пункты `- …` на английском — что изменилось для пользователя) и `git push --tags`. Bump версии и тег — один коммит; по тегу версия клиента закрепляется в чужих сборках. Дальше по тегу `.github/workflows/release.yml` пересобирает три пакета и перезаписывает репозитории `claude-code-plugin`, `codex-plugin`, `gemini-plugin` тем же тегом. Затем создаёт релиз на GitHub в этом репозитории с телом тега; тег без тела валит этот шаг.
+- Релиз: поднял `version` (одинаково в `harness/claude-code/.claude-plugin/plugin.json`, `harness/qwen-code/.qwen-plugin/plugin.json`, `harness/codex/.codex-plugin/plugin.json`, `harness/gemini/gemini-extension.json`) — на этот же коммит аннотированный тег `v<версия>` с кратким ченжлогом в теле (`git tag -a v0.1.11 -F заметки`: первая строка `v0.1.11`, пустая строка, пункты `- …` на английском — что изменилось для пользователя) и `git push --tags`. Bump версии и тег — один коммит; по тегу версия клиента закрепляется в чужих сборках. Репозиторий пакета должен существовать (пустой) до первого релиза. Дальше по тегу `.github/workflows/release.yml` пересобирает четыре пакета и перезаписывает репозитории `claude-code-plugin`, `qwen-code-plugin`, `codex-plugin`, `gemini-plugin` тем же тегом. Затем создаёт релиз на GitHub в этом репозитории с телом тега; тег без тела валит этот шаг.

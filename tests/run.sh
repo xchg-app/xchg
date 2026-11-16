@@ -61,11 +61,11 @@ else ok "no ssh-keygen: key tests skipped"; fi
 t "harness packages"
 PKG="$SB/packages"; VER=$(jq -r .version "$ROOT/harness/gemini/gemini-extension.json")
 BAD=""
-for p in "claude-code .claude-plugin/plugin.json" "codex .codex-plugin/plugin.json" "gemini gemini-extension.json"; do
+for p in "claude-code .claude-plugin/plugin.json" "qwen-code .qwen-plugin/plugin.json" "codex .codex-plugin/plugin.json" "gemini gemini-extension.json"; do
   set -- $p
   run "$ROOT/tools/package.sh" "$1" "$PKG/$1"; [ "$RC" = 0 ] && [ "$(jq -r .version "$PKG/$1/$2")" = "$VER" ] || BAD="$BAD $1"
 done
-assert_eq "$BAD" "" "the three packages build, with one version"
+assert_eq "$BAD" "" "the four packages build, with one version"
 # a clone on a machine with core.autocrlf=true (how Windows git is set up) still gets a working client
 BARE="$SB/gemini-plugin.git"; git init -q --bare "$BARE"
 run env XCHG_PACKAGE_REPO="$BARE" "$ROOT/tools/publish.sh" gemini "$VER"
@@ -77,6 +77,12 @@ if command -v claude >/dev/null 2>&1; then PH="$SB/claude-home"; mkdir -p "$PH"
   run env HOME="$PH" claude plugin install xchg@xchg; RC1=$RC; run env HOME="$PH" claude plugin list
   [ "$RC1" = 0 ] && ! grep -qF "failed to load" <<< "$OUT" && ok "claude-code: the plugin installs and loads" || fail "claude-code: the plugin doesn't install or load" "$OUT"
 else ok "no claude CLI: claude-code install skipped"; fi
+if command -v qwen >/dev/null 2>&1; then PH="$SB/qwen-home"; mkdir -p "$PH"
+  run env HOME="$PH" qwen plugins validate --strict "$PKG/qwen-code"; RC1=$RC
+  run bash -c "HOME='$PH' qwen plugins install '$PKG/qwen-code' </dev/null"; RC2=$RC
+  run env HOME="$PH" qwen plugins list
+  [ "$RC1" = 0 ] && [ "$RC2" = 0 ] && grep -q "xchg@local" <<< "$OUT" && ok "qwen-code: the plugin validates, installs and loads" || fail "qwen-code: the plugin doesn't validate, install or load" "$OUT"
+else ok "no qwen CLI: qwen-code install skipped"; fi
 if command -v codex >/dev/null 2>&1; then PH="$SB/codex-home"; mkdir -p "$PH/.codex"
   run env HOME="$PH" CODEX_HOME="$PH/.codex" codex plugin marketplace add "$PKG/codex"
   run env HOME="$PH" CODEX_HOME="$PH/.codex" codex plugin add xchg@xchg; assert_eq "$RC" 0 "codex: the plugin installs"

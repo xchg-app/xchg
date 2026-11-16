@@ -15,7 +15,7 @@ XCHG_ROOT="$(cd "$(dirname "$SELF")/.." && pwd -P)"
 
 # Installed as a harness package (plugin/extension)? Then the harness owns the files, hooks and updates.
 case "$XCHG_ROOT" in
-  "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/"*|"${CODEX_HOME:-$HOME/.codex}/plugins/"*|"$HOME/.gemini/extensions/"*) PLUGIN_MODE=1;;
+  "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/"*|"${QWEN_CONFIG_DIR:-$HOME/.qwen}/plugins/"*|"${CODEX_HOME:-$HOME/.codex}/plugins/"*|"$HOME/.gemini/extensions/"*) PLUGIN_MODE=1;;
   *) PLUGIN_MODE=0;;
 esac
 CONF_DIR="${XCHG_CONF_DIR:-$HOME/.config/xchg}"
@@ -1263,7 +1263,7 @@ cmd_hubs() {
 # to this client's version. README.md carries the contract and, right after it, the client release
 # the text came from (template:), so an older client never rolls the rules back.
 client_release() {  # the release version, also in a developer clone (cmd_version shows a commit there)
-  local m v; for m in .claude-plugin/plugin.json .codex-plugin/plugin.json gemini-extension.json harness/claude-code/.claude-plugin/plugin.json; do
+  local m v; for m in .claude-plugin/plugin.json .qwen-plugin/plugin.json .codex-plugin/plugin.json gemini-extension.json harness/claude-code/.claude-plugin/plugin.json; do
     v=$(sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p' "$XCHG_ROOT/$m" 2>/dev/null | head -1); [ -n "$v" ] && { echo "$v"; return 0; }; done
   echo 0
 }
@@ -1473,11 +1473,13 @@ cmd_sync() { require_hubs; [ "${1:-}" = --hub ] && OPT_HUB="$2"; local hubs unse
 # H_STYLE says how the hooks are written: json (a settings file jq can edit), yaml (a snippet the user
 # pastes: editing YAML needs a tool we don't require) or scripts (an executable file per event).
 # H_FORMAT is the field the harness reads the answer from (see hook_print).
-HARNESSES="claude-code codex gemini hermes cline"
+HARNESSES="claude-code qwen-code codex gemini hermes cline"
 harness_info() {  # <harness> -> H_DIR H_HOOKS H_START H_PROMPT H_TIMEOUT H_SKILLS H_STYLE H_FORMAT
   H_STYLE=json; H_FORMAT=claude
   case "$1" in
     claude-code) H_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; H_HOOKS="$H_DIR/settings.json"
+                 H_START=SessionStart; H_PROMPT=UserPromptSubmit; H_TIMEOUT=30; H_SKILLS="$H_DIR/skills";;
+    qwen-code)   H_DIR="${QWEN_CONFIG_DIR:-$HOME/.qwen}"; H_HOOKS="$H_DIR/settings.json"
                  H_START=SessionStart; H_PROMPT=UserPromptSubmit; H_TIMEOUT=30; H_SKILLS="$H_DIR/skills";;
     codex)       H_DIR="${CODEX_HOME:-$HOME/.codex}"; H_HOOKS="$H_DIR/hooks.json"
                  H_START=SessionStart; H_PROMPT=UserPromptSubmit; H_TIMEOUT=30; H_SKILLS="$HOME/.agents/skills";;
@@ -1550,7 +1552,7 @@ cmd_install() {
     esac
     [ "$hn" = codex ] && echo "  codex runs a new hook only after you trust it: open /hooks in a session"
   done
-  [ "$found" = 1 ] || echo "no supported harness found (looked for: ~/.claude, ~/.codex, ~/.gemini, ~/.hermes, ~/.cline): start your agent once and run xchg install again"
+  [ "$found" = 1 ] || echo "no supported harness found (looked for: ~/.claude, ~/.qwen, ~/.codex, ~/.gemini, ~/.hermes, ~/.cline): start your agent once and run xchg install again"
   ensure_conf
   [ -n "$CFG_DEFAULT" ] || { [ ${#HUBS[@]} -gt 0 ] && conf_set_global default "${HUBS[0]}"; }
   echo "done. Connect to a hub: xchg hub add work <remote>; create your own: xchg hub init work --remote <url>"
@@ -1576,7 +1578,7 @@ cmd_status() {
 }
 cmd_version() {  # a commit in a developer clone, the manifest version in an installed package
   if [ "$PLUGIN_MODE" = 0 ]; then git -C "$XCHG_ROOT" log -1 --format='%h %ci %s' 2>/dev/null && return 0; fi
-  local m v=""; for m in .claude-plugin/plugin.json .codex-plugin/plugin.json gemini-extension.json; do
+  local m v=""; for m in .claude-plugin/plugin.json .qwen-plugin/plugin.json .codex-plugin/plugin.json gemini-extension.json; do
     v=$(sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p' "$XCHG_ROOT/$m" 2>/dev/null | head -1); [ -n "$v" ] && break; done
   echo "${v:-unknown}"
 }

@@ -32,6 +32,7 @@ tags: [memory/repo, architecture]
 | харнесс | исходник пакета | репозиторий пакета | манифест | хуки | как попадает клиент |
 |---|---|---|---|---|---|
 | Claude Code | `harness/claude-code/` | `claude-code-plugin` | `.claude-plugin/plugin.json`; маркетплейс `.claude-plugin/marketplace.json` → `./` | `hooks/hooks.json` (подхватывается сам), `${CLAUDE_PLUGIN_ROOT}` | `bin/` в PATH |
+| Qwen Code | `harness/qwen-code/` | `qwen-code-plugin` | `.qwen-plugin/plugin.json`; маркетплейс `.qwen-plugin/marketplace.json` → `./` | `hooks/hooks.json` (подхватывается сам), `${QWEN_PLUGIN_ROOT}` | `bin/` в PATH |
 | Codex CLI | `harness/codex/` | `codex-plugin` | `.codex-plugin/plugin.json`; маркетплейс `.agents/plugins/marketplace.json` → `./` | `hooks/hooks.json` (стандартный путь), `${PLUGIN_ROOT}` | в PATH не попадает — путь говорит скилл |
 | Gemini CLI | `harness/gemini/` | `gemini-plugin` | `gemini-extension.json` | `hooks/hooks.json` (событие `BeforeAgent`, таймаут в мс), `${extensionPath}` | в PATH не попадает |
 
@@ -56,15 +57,15 @@ tags: [memory/repo, architecture]
 Репозитории пакетов руками не правят — следующий релиз затрёт.
 
 Общее для всех: `bin/xchg`, скиллы `skills/exchange` и `skills/xchg-setup` (настройка), обёртки
-команды `/xchg:setup` — `harness/claude-code/commands/setup.md` и
-`harness/gemini/commands/xchg/setup.toml`. Версия одна во всех трёх манифестах (тест сверяет).
+команды `/xchg:setup` — `harness/claude-code/commands/setup.md`, `harness/qwen-code/commands/setup.md` и
+`harness/gemini/commands/xchg/setup.toml`. Версия одна во всех четырёх манифестах (тест сверяет).
 
-Хуки всех трёх зовут `xchg inbox --brief`. Клиент читает `hook_event_name` из JSON на stdin
+Хуки всех четырёх зовут `xchg inbox --brief`. Клиент читает `hook_event_name` из JSON на stdin
 (`SessionStart` → всё открытое, любое другое → только новое) и отвечает
 `{"hookSpecificOutput":{"hookEventName":…,"additionalContext":…}}` (`hook_print`, `json_str`); без JSON
 на stdin — текстом. Нечего сказать — 0 байт.
 
-`PLUGIN_MODE`: `$XCHG_ROOT` внутри `~/.claude/plugins/`, `~/.codex/plugins/` или `~/.gemini/extensions/`.
+`PLUGIN_MODE`: `$XCHG_ROOT` внутри `~/.claude/plugins/`, `~/.qwen/plugins/`, `~/.codex/plugins/` или `~/.gemini/extensions/`.
 Тогда нет самообновления (обновляет харнесс), `install` только создаёт конфиг, `cmd_version` берёт
 версию из манифеста. Отдельная установка (`install`) настраивает каждый найденный харнесс по таблице
 `harness_info`: файл хуков, имена событий, единицы таймаута, каталог скиллов.

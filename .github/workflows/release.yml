@@ -1,7 +1,7 @@
 name: release
 
 # A release tag in this repository is the only source of a package release: it rebuilds each
-# harness package and overwrites its own repository, so the three always carry the same version.
+# harness package and overwrites its own repository, so all of them always carry the same version.
 on:
   push:
     tags: ['v*']
@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        harness: [claude-code, codex, gemini]
+        harness: [claude-code, qwen-code, codex, gemini]
     steps:
       - uses: actions/checkout@v4
       - name: version
@@ -29,7 +29,7 @@ jobs:
       - name: the manifests agree with the tag
         run: |
           set -eu
-          for m in harness/claude-code/.claude-plugin/plugin.json harness/codex/.codex-plugin/plugin.json harness/gemini/gemini-extension.json; do
+          for m in harness/claude-code/.claude-plugin/plugin.json harness/qwen-code/.qwen-plugin/plugin.json harness/codex/.codex-plugin/plugin.json harness/gemini/gemini-extension.json; do
             v=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$m" | head -1)
             [ "$v" = "${{ steps.v.outputs.version }}" ] || { echo "$m says $v, the tag says ${{ steps.v.outputs.version }}"; exit 1; }
           done

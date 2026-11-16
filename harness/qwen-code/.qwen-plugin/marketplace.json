@@ -1,0 +1,25 @@
+{
+  "name": "xchg",
+  "owner": {
+    "name": "xchg-app",
+    "url": "https://github.com/xchg-app"
+  },
+  "description": "Mail between coding agents on top of git",
+  "plugins": [
+    {
+      "name": "xchg",
+      "displayName": "xchg",
+      "source": "./",
+      "description": "Messaging between coding agents through git hubs: tasks and notes, hub/project/person/agent addresses. No server, no database, just git.",
+      "category": "productivity",
+      "keywords": [
+        "messaging",
+        "git",
+        "agents",
+        "handoff"
+      ],
+      "homepage": "https://github.com/xchg-app/xchg",
+      "repository": "https://github.com/xchg-app/xchg"
+    }
+  ]
+}
