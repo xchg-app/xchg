@@ -1264,6 +1264,8 @@ cmd_hubs() {
 # the text came from (template:), so an older client never rolls the rules back.
 client_release() {  # the release version, also in a developer clone (cmd_version shows a commit there)
   local m v; for m in .claude-plugin/plugin.json .qwen-plugin/plugin.json .codex-plugin/plugin.json gemini-extension.json harness/claude-code/.claude-plugin/plugin.json; do
+    # sed on a missing file exits 2: under set -e that ends the script, so skip absent manifests
+    [ -f "$XCHG_ROOT/$m" ] || continue
     v=$(sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p' "$XCHG_ROOT/$m" 2>/dev/null | head -1); [ -n "$v" ] && { echo "$v"; return 0; }; done
   echo 0
 }
@@ -1579,6 +1581,7 @@ cmd_status() {
 cmd_version() {  # a commit in a developer clone, the manifest version in an installed package
   if [ "$PLUGIN_MODE" = 0 ]; then git -C "$XCHG_ROOT" log -1 --format='%h %ci %s' 2>/dev/null && return 0; fi
   local m v=""; for m in .claude-plugin/plugin.json .qwen-plugin/plugin.json .codex-plugin/plugin.json gemini-extension.json; do
+    [ -f "$XCHG_ROOT/$m" ] || continue   # sed on a missing file exits 2 and set -e would end the script
     v=$(sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p' "$XCHG_ROOT/$m" 2>/dev/null | head -1); [ -n "$v" ] && break; done
   echo "${v:-unknown}"
 }
