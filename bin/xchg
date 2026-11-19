@@ -1396,8 +1396,11 @@ cmd_hub() {
       [ -n "$path" ] || path="$HOME/exchange/$name"
       drop_stale_state "$path"
       if [ -f "$path/.git/HEAD" ]; then [ "$(git -C "$path" remote get-url origin 2>/dev/null)" = "$remote" ] || die "$path already holds a different clone"; echo "clone already exists: $path"
-      elif [ -n "$key" ]; then GIT_SSH_COMMAND="$(ssh_cmd "$key")" git clone -q "$remote" "$path" || die "clone of $(masked "$remote") with the key $key failed (xchg hub check $name after fixing it)"
-      else git clone -q "$remote" "$path" || die "clone of $(masked "$remote") failed (xchg hub check $name)"; fi
+      else
+        if [ -n "$key" ]; then GIT_SSH_COMMAND="$(ssh_cmd "$key")" git clone -q "$remote" "$path" || die "clone of $(masked "$remote") with the key $key failed (xchg hub check $name after fixing it)"
+        else git clone -q "$remote" "$path" || die "clone of $(masked "$remote") failed (xchg hub check $name)"; fi
+        now_epoch > "$path/.git/xchg-last-sync"   # a fresh clone is synced
+      fi
       [ -n "$key" ] && bind_key "$path" "$key"
       if [ "$resume" = 1 ]; then
         [ -n "$cr" ] || { conf_set_hub "$name" remote "$remote"; hub_set "$name" remote "$remote"; }
