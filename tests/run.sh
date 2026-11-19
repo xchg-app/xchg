@@ -177,6 +177,8 @@ run in_api "$X" reply "$R" again <<< '# Forgot to say'; assert_contains "$OUT" "
 T1=$(ls "$H/exchange/work/projects/api/bob/"*task1.md)
 run in_api "$X" reply "$T1" ping <<< '# Any news?'   # the sender's own follow-up is not an answer
 run in_api "$X" sent; assert_eq "$(awk '/A task for Bob/ {print $4}' <<< "$OUT")" "waiting" "an unanswered task waits"
+run in_web "$X" sent; S1="$OUT"; run in_web "$X" sent --all
+! grep -qF "A task for Bob" <<< "$S1" && grep -qF "in other projects (xchg sent --all)" <<< "$S1" && grep -qF "A task for Bob" <<< "$OUT" && ok "sent shows this agent's tasks; --all every project" || fail "sent mixes projects" "$S1"$'\n---\n'"$OUT"
 assert_not_contains "$OUT" "Release 2.3"   # sent lists tasks only, not messages
 run in_api "$X" sent --stale; S1="$OUT"; run in_api "$X" sent --stale 0
 ! grep -qF "A task for Bob" <<< "$S1" && grep -qF "A task for Bob" <<< "$OUT" && ok "sent --stale keeps only tasks older than the given days" || fail "sent --stale filters wrongly" "$S1"$'\n---\n'"$OUT"

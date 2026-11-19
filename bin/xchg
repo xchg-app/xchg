@@ -974,14 +974,15 @@ cmd_seen() {  # mark messages as read: a whole address, one file or all my addre
   if [ -e "$target" ] || [[ "$target" == *.md ]]; then locate "$target"; mark_read "$L_HUB" "$(dirname "$L_REL")" "$L_REL"; echo "read: $L_HUB:$L_REL"; return 0; fi
   parse_addr "$target"; sync_hubs "$A_HUB"; mark_read "$A_HUB" "$A_REL"; echo "read: $A_HUB:$A_LABEL"
 }
-cmd_sent() {  # my open tasks; a task the recipient has answered is "replied", the rest "waiting"
-  require_hubs; local hubs h d me f from n=0 st replies wait="" rep="" days="" cut=""
+cmd_sent() {  # this agent's open tasks (--all: every project of mine); answered ones are "replied", the rest "waiting"
+  require_hubs; local hubs h d me sid f from n=0 other=0 all=0 st replies wait="" rep="" days="" cut=""
   while [ $# -gt 0 ]; do case "$1" in
     --stale) days=14; shift; case "${1:-}" in ''|-*) ;; *[!0-9]*) udie "sent --stale [days]: days must be a number";; *) days="$1"; shift;; esac;;
-    *) udie "sent [--stale [days]]";; esac; done
+    --all) all=1; shift;;
+    *) udie "sent [--all] [--stale [days]]";; esac; done
   [ -z "$days" ] || cut=$(utc_stamp $(( $(date -u +%s) - days * 86400 )))   # file names start with the same stamp
   hubs=$(hub_filter); sync_hubs $hubs
-  for h in $hubs; do me=$(hub_login "$h"); d=$(hub_path "$h")
+  for h in $hubs; do me=$(hub_login "$h"); sid=$(sender_id "$h"); d=$(hub_path "$h")
     # "<re><TAB><from>" of every message that answers something, open or closed
     replies=$(find "$d" -name '*.md' -not -name README.md -not -path '*/.git/*' -type f -exec awk '
       FNR==1 { fm=0; re=""; fr=""; if ($0 != "---") nextfile } /^---$/ { if (++fm == 2) { if (re != "") print re "\t" fr; nextfile } next }
@@ -989,6 +990,7 @@ cmd_sent() {  # my open tasks; a task the recipient has answered is "replied", t
     while IFS= read -r f; do [ "$(kind_of "$f")" = task ] || continue
       from=$(meta from "$f"); case "$from" in "$me"|"$me"/*) ;; *) continue;; esac
       st=$(basename "$f"); [ -z "$cut" ] || [[ "${st%%_*}" < "$cut" ]] || continue
+      [ "$all" = 1 ] || [ "$from" = "$sid" ] || { other=$((other+1)); continue; }
       # an answer from the sender's own signature is a follow-up, not the recipient's reply
       if printf '%s\n' "$replies" | awk -F'\t' -v b="$(basename "$f")" -v s="$from" '$1==b && $2!=s {x=1} END {exit !x}'
       then st=replied; else st=waiting; fi
@@ -996,8 +998,10 @@ cmd_sent() {  # my open tasks; a task the recipient has answered is "replied", t
       if [ "$st" = waiting ]; then wait="$wait$f"$'\n'; else rep="$rep$f"$'\n'; fi; n=$((n+1))
     done < <(find "$d" -name '*.md' -not -name README.md -not -path '*/.git/*' -not -path '*/done/*' -type f 2>/dev/null | sort)
   done
-  [ "$n" -gt 0 ] || { echo "no open tasks of mine${days:+ older than $days days}"; return 0; }
+  [ "$n" -gt 0 ] || echo "no open tasks of mine${days:+ older than $days days}"
   printf "%s%s" "$wait" "$rep"
+  [ "$other" = 0 ] || echo "$other more $(plural "$other" task tasks) in other projects (xchg sent --all)"
+  [ "$n" -gt 0 ] || return 0
   [ -z "$days" ] || echo "open for more than $days days: close what is already handled with xchg done <file>"
   [ -z "$rep" ] || echo "replied: the recipient answered; once the result is accepted, close it yourself: xchg done <file>"
 }
@@ -1620,7 +1624,7 @@ Address: [hub:]part[:part] — all | @project | person | @project:person (part o
   done <file>                               close a task (moves to done/)
   seen [address|file]                       mark messages as read
   mute <file>...                            not mine: don't show it or wake this agent
-  sent [--stale [days]]                     my open tasks: waiting, or replied to; --stale: only older than days (14)
+  sent [--all] [--stale [days]]             this agent's open tasks: waiting, or replied to; --all: every project; --stale: only older than days (14)
   thread <file>                             the conversation by re:, including closed ones
   forward <file> <address> [--note '...']   forward to another hub
   who [query] [--hub H]                     hub contacts
