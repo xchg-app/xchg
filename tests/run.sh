@@ -215,6 +215,14 @@ put "people/alice/$(date -u +%Y%m%d-%H%M%S)_bob-api_answer.md" bob/api alice mes
 run in_api "$X" inbox; A1=$OUT; run in_tool inbox
 ! grep -qF "Answer for tool" <<< "$A1" && grep -qF "Answer for tool" <<< "$OUT" && ok "the reply reaches the agent that sent the original, and only it" || fail "the reply went to the wrong agent" "$A1"$'\n---\n'"$OUT"
 
+t "a message only counted among other projects is not shown: the reply to it stays with its agent"
+put projects/web/alice/20260910-120000_bob-api_forweb.md bob/api @web:alice message "For the web agent"
+run in_web "$X" inbox; run in_api "$X" inbox; assert_contains "$OUT" "in other projects"
+put "people/alice/$(date -u +%Y%m%d-%H%M%S)_bob-api_webanswer.md" bob/api alice message "Answer for web" 20260910-120000_bob-api_forweb.md
+run in_api "$X" inbox; assert_not_contains "$OUT" "Answer for web"
+run in_web "$X" inbox; assert_contains "$OUT" "Answer for web"
+run in_api hook UserPromptSubmit "$X" inbox --brief; run in_api hook UserPromptSubmit "$X" inbox --brief; assert_eq "$OUT" "" "the count of other projects is not repeated on every prompt"
+
 t "outside a repository nothing is signed by the person in silence"
 mkdir -p "$SB/scratch"; out() { ( cd "$SB/scratch" && "$X" "$@" ); }
 run out post bob lost <<< '# From nowhere'
