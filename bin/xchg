@@ -487,9 +487,28 @@ set_card_repo() {  # <README.md> <url>: the Repository line of a card, replaced 
 project_norm() {  # repository name -> valid project name: TRENDS-frontend -> trends-frontend
   printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C sed 's/[^a-z0-9._-]/-/g; s/--*/-/g; s/^-//; s/-$//'
 }
-sender_id() {  # <hub> -> sender signature: user/project, or just user outside a repository
+AS_PERSON=0        # --as-person: this message is signed by the person alone, on purpose
+PROJECT_FORCED=""  # --project / XCHG_PROJECT: the agent is named, whatever the directory says
+use_project() {  # <name>
+  [[ "$1" =~ $PROJ_RE ]] || udie "project name '$1' needs [a-z0-9._-]"
+  CUR_PROJECT="$1"; CUR_HUB_PROJECTS=""; PROJECT_FORCED="$1"
+}
+sender_id() {  # <hub> -> sender signature: user/project; just user on --as-person or from a repository that is not a project
   local me p; me=$(hub_login "$1"); p=$(cur_project "$1")
-  { [ -n "$p" ] && has_project "$1" "$p"; } && echo "$me/$p" || echo "$me"
+  { [ "$AS_PERSON" = 0 ] && [ -n "$p" ] && has_project "$1" "$p"; } && echo "$me/$p" || echo "$me"
+}
+# A message is written by an agent: person x project. Where the project is unknown the client refuses
+# instead of signing with the person alone: the reply would miss the agent that asked.
+need_agent() {  # <hub>
+  [ "$AS_PERSON" = 0 ] || return 0
+  local p; p=$(cur_project "$1")
+  if [ -n "$PROJECT_FORCED" ]; then has_project "$1" "$p" || die "project '$p' is not in hub $1 (xchg projects)"; return 0; fi
+  [ -n "$p" ] || udie "not in a git repository, so the agent is unknown: the message would be signed by $(hub_login "$1") alone and the reply would come to the personal address. Run it from the project's repository (the body can come from anywhere: < /path/body.md), name the project (--project <name>), or sign as the person on purpose (--as-person)"
+}
+addressed_project() {  # <hub> <path in hub> -> the project, when the message went to my agent or to its project
+  local a b c rest; IFS=/ read -r a b c rest <<< "$2"
+  [ "$a" = projects ] || return 0
+  case "$c" in ("$(hub_login "$1")"|done|*.md) echo "$b";; esac
 }
 my_addrs() {  # <hub> -> this session's addresses: the hub, me, my project, my agent
   local h="$1" me p; me=$(hub_login "$h"); p=$(cur_project "$h")
@@ -678,7 +697,7 @@ warn_secrets() { grep -qE 'AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|gh[ous]_[A-Za-z
 # A message from a repository that is not a project in the hub is signed with the person alone, so the
 # reply comes to the personal address instead of this agent's.
 warn_no_project() {  # <hub>
-  local p; p=$(cur_project "$1"); [ -n "$p" ] || return 0
+  local p; p=$(cur_project "$1"); [ -n "$p" ] && [ "$AS_PERSON" = 0 ] || return 0
   has_project "$1" "$p" && return 0
   warn "sent as $(hub_login "$1"), without a project: repository '$p' is not a project in hub $1, so the reply will come to your personal address, not to this agent. Add it: xchg projects add --hub $1"
 }
@@ -1044,11 +1063,12 @@ cmd_thread() {
 send_common() {  # <kind> <address> <slug> [flags] < body
   local kind="$1" to="$2" slug="$3"; shift 3; local re="" ref="" att=() links=""
   while [ $# -gt 0 ]; do case "$1" in --re) re="$2"; shift 2;; --ref) ref="$2"; shift 2;;
+    --as-person) AS_PERSON=1; shift;; --project) [ $# -ge 2 ] || udie "--project needs a name"; use_project "$2"; shift 2;;
     --attach) att[${#att[@]}]="$2"; shift 2;; *) udie "unknown flag $1";; esac; done
   [[ "$slug" =~ $NAME_RE ]] || udie "slug must be [A-Za-z0-9._-]"
   [ -t 0 ] && udie "the message body is expected on stdin"
   local body; body=$(cat)
-  sync_hubs ${HUBS[@]+"${HUBS[@]}"}; parse_addr "$to"; check_contract "$A_HUB"
+  sync_hubs ${HUBS[@]+"${HUBS[@]}"}; parse_addr "$to"; check_contract "$A_HUB"; need_agent "$A_HUB"
   [ ${#att[@]} -eq 0 ] || links=$(upload_all "$A_HUB" "${att[@]}") || exit 1
   local from f; from=$(sender_id "$A_HUB")
   f=$(write_msg "$A_HUB" "$A_REL" "$kind" "$from" "$A_LABEL" "$slug" "$re" "$ref" "" "$body" "$links")
@@ -1057,24 +1077,30 @@ send_common() {  # <kind> <address> <slug> [flags] < body
   mark_read "$A_HUB" "$A_REL" "$f"; mark_shown "$A_HUB" "$(basename "$f")"
   echo "sent: $A_HUB:$f"
 }
-cmd_send() { require_hubs; [ $# -ge 2 ] || udie "send <address> <slug> [--re file] [--ref where] [--attach file]... < body"; send_common task "$@"; }
-cmd_post() { require_hubs; [ $# -ge 2 ] || udie "post <address> <slug> [--re file] [--ref where] [--attach file]... < body"; send_common message "$@"; }
+cmd_send() { require_hubs; [ $# -ge 2 ] || udie "send <address> <slug> [--re file] [--ref where] [--attach file]... [--project name | --as-person] < body"; send_common task "$@"; }
+cmd_post() { require_hubs; [ $# -ge 2 ] || udie "post <address> <slug> [--re file] [--ref where] [--attach file]... [--project name | --as-person] < body"; send_common message "$@"; }
 cmd_reply() {
-  require_hubs; [ $# -ge 2 ] || udie "reply <file> <slug> [--task|--message] [--ref where] [--attach file]..."
+  require_hubs; [ $# -ge 2 ] || udie "reply <file> <slug> [--task|--message] [--ref where] [--attach file]... [--project name | --as-person]"
   local src="$1" slug="$2"; shift 2; local kind=message ref="" att=() links=""
   while [ $# -gt 0 ]; do case "$1" in --task) kind=task; shift;; --message|--note) kind=message; shift;;
     --ref) [ $# -ge 2 ] || udie "reply: --ref needs a value"; ref="$2"; shift 2;;
+    --as-person) AS_PERSON=1; shift;; --project) [ $# -ge 2 ] || udie "--project needs a name"; use_project "$2"; shift 2;;
     --attach) att[${#att[@]}]="$2"; shift 2;; *) udie "reply: unknown flag $1";; esac; done
   [ -t 0 ] && udie "reply: the reply body is expected on stdin"
   local body; body=$(cat)
   sync_hubs ${HUBS[@]+"${HUBS[@]}"}; locate "$src"
   local f="$(hub_path "$L_HUB")/$L_REL"; [ -f "$f" ] || die "no file $L_HUB:$L_REL"
-  local from to; from=$(meta from "$f"); [ -n "$from" ] || die "$L_REL has no from field: nobody to reply to"
+  local from to ap; from=$(meta from "$f"); [ -n "$from" ] || die "$L_REL has no from field: nobody to reply to"
+  ap=$(addressed_project "$L_HUB" "$L_REL")
+  if [ -n "$ap" ] && [ "$AS_PERSON" = 0 ]; then
+    if [ -z "$CUR_PROJECT" ]; then CUR_PROJECT="$ap"; CUR_HUB_PROJECTS=""   # outside a repository the agent that was written to answers
+    elif [ "$ap" != "$(cur_project "$L_HUB")" ]; then warn "replying as $(sender_id "$L_HUB") to a message addressed to project $ap (its agent answers with --project $ap)"; fi
+  fi
   if [ "$from" = "$(sender_id "$L_HUB")" ]; then   # this agent's own message: the thread goes on to its recipient, not back to me
     # (my other agents share the login, and a reply to one of them must still reach that agent)
     to=$(meta to "$f"); [ -n "$to" ] || die "$L_REL is yours and has no to field: nobody to reply to"; to="$L_HUB:$to"
   else case "$from" in */*) to="$L_HUB:@${from#*/}:${from%%/*}";; *) to="$L_HUB:$from";; esac; fi
-  parse_addr "$to"; check_contract "$A_HUB"
+  parse_addr "$to"; check_contract "$A_HUB"; need_agent "$A_HUB"
   [ ${#att[@]} -eq 0 ] || links=$(upload_all "$A_HUB" "${att[@]}") || exit 1
   local me nf; me=$(sender_id "$A_HUB")
   nf=$(write_msg "$A_HUB" "$A_REL" "$kind" "$me" "$A_LABEL" "$slug" "$(basename "$L_REL")" "$ref" "" "$body" "$links")
@@ -1124,12 +1150,14 @@ cmd_done() {  # close a task: the file moves to done/ of its address
   hub_push "$h" "[xchg] $(hub_login "$h") done: $(basename "$rel")" || true; echo "closed: $h:$dir/done/$(basename "$rel")"
 }
 cmd_forward() {
-  require_hubs; [ $# -ge 2 ] || udie "forward <file> <address> [--note '...']"
+  require_hubs; [ $# -ge 2 ] || udie "forward <file> <address> [--note '...'] [--project name | --as-person]"
   local src="$1" to="$2" note=""; shift 2
-  while [ $# -gt 0 ]; do case "$1" in --note) note="$2"; shift 2;; *) udie "forward: unknown flag $1";; esac; done
+  while [ $# -gt 0 ]; do case "$1" in --note) note="$2"; shift 2;;
+    --as-person) AS_PERSON=1; shift;; --project) [ $# -ge 2 ] || udie "--project needs a name"; use_project "$2"; shift 2;;
+    *) udie "forward: unknown flag $1";; esac; done
   sync_hubs ${HUBS[@]+"${HUBS[@]}"}; locate "$src"
   local sd="$(hub_path "$L_HUB")/$L_REL"; [ -f "$sd" ] || die "no file $L_HUB:$L_REL"
-  parse_addr "$to"; check_contract "$A_HUB"
+  parse_addr "$to"; check_contract "$A_HUB"; need_agent "$A_HUB"
   local from body slug kind; from=$(sender_id "$A_HUB"); kind=$(kind_of "$sd")
   slug=$(basename "$L_REL" .md); slug="${slug#*_}"; slug="${slug#*_}"; slug="fwd-${slug:-msg}"
   body=$( [ -n "$note" ] && printf '%s\n\n' "$note"; printf -- '--- forwarded from %s (from %s) ---\n' "$L_HUB" "$(meta from "$sd")"; body_of "$sd" )
@@ -1630,6 +1658,8 @@ Address: [hub:]part[:part] — all | @project | person | @project:person (part o
   sent [--all] [--stale [days]]             this agent's open tasks: waiting, or replied to; --all: every project; --stale: only older than days (14)
   thread <file>                             the conversation by re:, including closed ones
   forward <file> <address> [--note '...']   forward to another hub
+  send, post, reply, forward take [--project name | --as-person]: outside a repository the agent is unknown
+    and they refuse; name the project, or sign as the person alone (reply takes the project the message went to)
   who [query] [--hub H]                     hub contacts
   contact [--name N] [--aliases A] [--contact C]   my row in contacts.md
   contact rm <login> [--hub H]              remove a person from the contact book (the address is gone)
@@ -1653,7 +1683,7 @@ main() {
   case "${2:-}" in -h|--help) cmd_help "$1"; exit 0;; esac
   load_conf
   case "${1:-}" in hub|hubs|status) ;; *) drop_uncloned;; esac
-  resolve_projects
+  resolve_projects; [ -z "${XCHG_PROJECT:-}" ] || use_project "$XCHG_PROJECT"
   case "${1:-help}" in
     wait) shift; cmd_wait "$@";;
     mute) shift; cmd_mute "$@";;

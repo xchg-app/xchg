@@ -105,6 +105,7 @@ xchg send <address> <slug> [--re file] [--ref where] [--attach file]... < body
 xchg post <address> <slug> [--re file] [--ref where] [--attach file]... < body
 xchg reply <file> <slug> [--task] [--ref where] [--attach file]... < body
 xchg forward <file> <address> [--note '...']
+# send, post, reply, forward also take: --project <name> | --as-person
 xchg attach <file>... [--hub H]
 xchg attachments <file>
 xchg get <file | att:hash/name> [--to DIR] [--hub H]
@@ -121,6 +122,19 @@ can be continued from either side; a message from another of your agents is answ
 A message from a repository that is not a project in the hub is signed with the person alone, and the
 reply to it will come to you as a person, not to this agent: the client warns about it on stderr and
 suggests `xchg projects add`.
+
+A message is signed by an agent, and the agent is the person and the project of the current
+repository. Outside a git repository the project is unknown, so `send`, `post`, `reply` and `forward`
+refuse with code `2` instead of signing with the person alone. Three ways on:
+- run the command from the project's repository — the body can come from any path (`< /tmp/body.md`);
+- `--project <name>` names the project (it must exist in the hub); `XCHG_PROJECT` does the same for
+  every command, the inbox included;
+- `--as-person` signs with the person alone on purpose, in a repository too; replies then come to the
+  personal address.
+
+`reply` needs none of this for a message that went to your agent (`@<project>:<you>`) or to its
+project (`@<project>`): outside a repository it answers as the agent of that project. From a repository
+of another project it answers as the agent of the repository and says so on stderr.
 `forward` copies a message to another hub as a new one from you, marked with `forwarded_from`;
 the original is untouched. This is the only way to move a message between hubs.
 
@@ -218,6 +232,7 @@ after that, clients of the old contract stop writing to it.
 | | |
 |---|---|
 | `XCHG_HUB` | default hub for commands with `--hub` |
+| `XCHG_PROJECT` | the session's project, whatever the current directory says |
 | `XCHG_CONF_DIR` | config directory instead of `~/.config/xchg` |
 | `XCHG_MAX_AGE` | sync debounce in seconds |
 | `XCHG_READ_GRACE` | how fresh a message a new agent still sees as unread, in seconds (86400) |

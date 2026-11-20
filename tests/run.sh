@@ -215,6 +215,16 @@ put "people/alice/$(date -u +%Y%m%d-%H%M%S)_bob-api_answer.md" bob/api alice mes
 run in_api "$X" inbox; A1=$OUT; run in_tool inbox
 ! grep -qF "Answer for tool" <<< "$A1" && grep -qF "Answer for tool" <<< "$OUT" && ok "the reply reaches the agent that sent the original, and only it" || fail "the reply went to the wrong agent" "$A1"$'\n---\n'"$OUT"
 
+t "outside a repository nothing is signed by the person in silence"
+mkdir -p "$SB/scratch"; out() { ( cd "$SB/scratch" && "$X" "$@" ); }
+run out post bob lost <<< '# From nowhere'
+[ "$RC" = 2 ] && grep -qF -- "--as-person" <<< "$OUT" && ! ls "$H/exchange/work/people/bob/"*lost.md >/dev/null 2>&1 && ok "post outside a repository is refused and writes nothing" || fail "post outside a repository went through" "$OUT"
+put projects/api/alice/20260910-110000_bob-api_where.md bob/api @api:alice message "Where are you"
+run out reply "$H/exchange/work/projects/api/alice/20260910-110000_bob-api_where.md" here <<< '# Here'
+assert_eq "$(sed -n 's/^from: //p' "$(ls "$H/exchange/work/projects/api/bob/"*here.md)")" alice/api "reply outside a repository answers as the agent the message went to"
+run out post bob named --project api <<< '# Named'; assert_eq "$(sed -n 's/^from: //p' "$(ls "$H/exchange/work/people/bob/"*named.md)")" alice/api "--project names the agent"
+run in_api "$X" post bob myself --as-person <<< '# Myself'; assert_eq "$(sed -n 's/^from: //p' "$(ls "$H/exchange/work/people/bob/"*myself.md)")" alice "--as-person signs with the person alone"
+
 t "second hub: my own agents under one login"
 run "$X" hub init me --login alice
 run in_api "$X" projects add api --hub me; run in_web "$X" projects add web --hub me

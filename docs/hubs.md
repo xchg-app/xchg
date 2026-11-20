@@ -29,7 +29,7 @@ File `YYYYMMDD-HHMMSS_<sender>_<slug>.md`:
 
 ```markdown
 ---
-from: alice/api             # person/project; outside a repository just the person
+from: alice/api             # person/project; just the person on --as-person
 to: @api:bob                # canonical address
 kind: task                  # task: do it once; message: read it, answer if there is something to say
 date: 2026-09-09T14:12:00Z
